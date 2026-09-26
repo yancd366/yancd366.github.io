@@ -2,10 +2,10 @@ import { activities, goals, places, equipmentLabels, sources, relations, bodyReg
 import { initialState, STORE_KEY, SCHEMA_VERSION, createPlan, replaceItem, finishSession, updateNote, checkPlanStart, safeURL, uid } from './domain.js';
 import { esc, icon, badge, dateText, elapsedText } from './ui.js';
 import { buildIntakeInput, validateIntake, buildPlanInput, validatePlan, buildLogInput, validateLog, logToRecords, setsText, parseSetsText, setSummary } from './ai.js';
-import { normalizeStore,parseBackup,mergeBackup,sanitizeForExport } from './storage.js';
-import { directConfig, directConsentId, providerHost, directMessages, callDirect } from './ai-direct.js';
+import { normalizeStore,parseBackup,mergeBackup,sanitizeForExport,rawBackupText } from './storage.js';
+import { directConfig, directConsentId, providerHost, directMessages, callDirect, allowedBase, AINetworkError, proxyPossible } from './ai-direct.js';
 import { validateSets, restDefault, isTimed, timeTarget } from './training.js';
-import { safetyBlock } from './safety.js';
+import { safetyBlock, textMentionsLimits } from './safety.js';
 import { abilityEntry } from './abilities.js';
 import { exerciseLogForm,sessionEditForm,assessmentForm,activityName } from './experience.js';
 import { applyReplacement } from './domain.js';
@@ -24,6 +24,7 @@ let page=routes[location.hash.slice(1)]?location.hash.slice(1):'today';
 let request=structuredClone(state.draft?.request||{minutes:20,place:'home',focus:state.profile.focus,readiness:'normal',targetRegions:[]});
 let filters={search:'',category:'all',system:'all',place:'all',personal:'all'},knowledgeFilter='all',toastTimer;
 const aiState={ready:false,busy:false,mode:null,text:'',model:null,provider:'',consentId:null,paired:false,pairingRequired:false,optionsOpen:false,adjustText:''};let pendingLog=null;
+aiState.text=state.aiPending?.text||'';
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4500);}
 function commit(change){
   if(storageError){toast('本地数据暂时无法读取。已暂停保存，不覆盖原有记录。');return false;}
@@ -56,17 +57,27 @@ function detail(id){
 // The server only adds the prompt and key; context and validation stay here, next to the local data.
 async function askAI(skill,input,validate){
   if(!ensureAI())throw new Error('请先启用 AI 并确认数据发送范围。');
+  if(navigator.onLine===false)throw new AINetworkError('当前没有网络。');
   const cfg=directConfig(state);
   // 本机存了 key 就浏览器直连模型（出门也能用），否则走 Mac 代理。
   const call=cfg
     ?async repair=>(await callDirect(skill,directMessages(skill,input,repair),cfg)).reply
-    :async repair=>{const res=await fetch(`/api/ai/${skill}`,{method:'POST',headers:{'Content-Type':'application/json','X-Xundong-Consent':aiState.consentId},body:JSON.stringify({input,repair})});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||`AI 服务出错（${res.status}）`);return data.reply;};
+    :async repair=>{let res;try{res=await fetch(`/api/ai/${skill}`,{method:'POST',headers:{'Content-Type':'application/json','X-Xundong-Consent':aiState.consentId},body:JSON.stringify({input,repair})});}catch{throw new AINetworkError();}const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||`AI 服务出错（${res.status}）`);return data.reply;};
   let reply=await call(),result=validate(reply);
   if(!result.ok){reply=await call({reply,errors:result.errors});result=validate(reply);}
   if(!result.ok)throw new Error(`AI 的结果没有通过校验：${result.errors.slice(0,2).join('；')}。可以换个说法重试，或用规则安排。`);
   return result;
 }
-async function withBusy(task){if(aiState.busy)return;aiState.busy=true;render();try{await task();}catch(e){toast(e.message||'AI 暂时不可用，可以先用规则安排。');}finally{aiState.busy=false;render();}}
+async function withBusy(task,kind){if(aiState.busy)return;aiState.busy=true;render();try{await task();}catch(e){if(e instanceof AINetworkError&&kind)aiOfflineDialog(kind);else toast(e instanceof AINetworkError?'现在连不上 AI，原文还在，联网后再试。':e.message||'AI 暂时不可用，可以先用规则安排。');}finally{aiState.busy=false;render();}}
+// 断网时：保留用户的文字要求；只有文字里没有不适/避开项时，才提供本地规则顶替。
+function aiOfflineDialog(kind){
+  const text=(kind==='adjust'?aiState.adjustText:aiState.text).trim();
+  if(kind==='plan'&&text)commit(s=>s.aiPending={text,savedAt:new Date().toISOString()});
+  const local=kind!=='plan'?'':textMentionsLimits(text)
+    ?'<div class="notice error"><p>你的要求里提到了不适或要避开的动作。本地规则读不懂文字，没法替你避开，所以这次不用本地规则顶替。可以联网后再让 AI 安排，或在「当前状态」里选「身体有不舒服」。</p></div>'
+    :`<p class="helper left">本地规则只按你选的时间、地点和重点安排${text?'，不会读取上面这段文字':''}。</p><button class="primary full" data-action="generate-offline">用本地规则安排</button>`;
+  showModal('现在连不上 AI',`<p>${text?`你的要求已保留：「${esc(text)}」。联网后${kind==='adjust'?'再点「调整」':'点「给我安排」'}即可继续。`:'联网后可以再试一次 AI。'}</p>${local}<button class="secondary full" data-action="close">保留要求，联网后再试</button>`);
+}
 function clarifyDialog(question,next){showModal('再确认一下',`<p>${esc(question)}</p><form id="ai-clarify-form" data-next="${next}"><label>你的回答<textarea name="answer" required maxlength="500"></textarea></label><button class="primary full" type="submit">继续 ${icon('arrow')}</button></form>`);}
 function referDialog(reason){showModal('先照顾好身体',`<p>${esc(reason)}</p><p class="helper left">这次不自动安排训练。可以先记下现在的状态。</p><button class="primary" data-action="observation">记录当前状态</button>`);}
 async function aiPlan(){
@@ -76,7 +87,7 @@ async function aiPlan(){
   if(text){const r=await askAI('intake',buildIntakeInput(state,text,defaults),x=>validateIntake(x,defaults));if(r.status==='clarify')return clarifyDialog(r.question,'plan');if(r.status==='refer')return referDialog(r.reason);req=r.request;}
   const r=await askAI('plan',buildPlanInput(state,req),x=>validatePlan(x,{request:req,profile:state.profile}));
   if(r.status==='clarify')return clarifyDialog(r.question,'plan');if(r.status==='refer')return referDialog(r.reason);
-  if(commit(s=>s.draft=r.plan)){request=structuredClone(r.plan.request);aiState.text='';toast(r.warnings[0]||'已生成今天的安排，可以调整或直接开始。');}
+  if(commit(s=>{s.draft=r.plan;s.aiPending=null;})){request=structuredClone(r.plan.request);aiState.text='';toast(r.warnings[0]||'已生成今天的安排，可以调整或直接开始。');}
 }
 async function aiAdjust(instruction){
   const p=state.draft;
@@ -188,7 +199,7 @@ function directSection(){
     +`<p class="small muted">把接口地址、API key、模型名存在<strong>本机浏览器</strong>，主动使用 AI 时由本机直接连服务方、不经过 Mac。部署到 HTTPS 后可随时随地使用。</p>`
     +`<p class="small muted">⚠️ key 明文存在本设备：请只在自己的私人设备上开启；能打开这台设备的人就能拿到它。导出的备份不会包含 key。</p>`
     +`<form id="ai-direct-form">`
-    +`<label>接口地址（OpenAI 兼容，到 /v1）<input name="base" type="url" inputmode="url" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" value="${esc(cfg?.base||'')}" required></label>`
+    +`<label>接口地址（目前只支持阿里云百炼）<input name="base" type="url" inputmode="url" value="${esc(cfg?.base||'https://dashscope.aliyuncs.com/compatible-mode/v1')}" required></label>`
     +`<label>API key<input name="key" type="password" autocomplete="off" placeholder="${cfg?'已保存，留空表示不修改':'sk-...'}"${cfg?'':' required'}></label>`
     +`<label>模型名<input name="model" placeholder="qwen3.8-flash" value="${esc(cfg?.model||'')}" required></label>`
     +`<label class="checkbox-line"><input name="consent" type="checkbox" required>我明白 key 会存在本设备，并同意使用 AI 时向该服务发送数据</label>`
@@ -205,6 +216,7 @@ function aiSettings(){
 function applyDirect(){const cfg=directConfig(state);if(!cfg)return false;Object.assign(aiState,{ready:true,mode:'direct',model:cfg.model,provider:providerHost(cfg.base),consentId:cfg.consentId,paired:true,pairingRequired:false});return true;}
 function probeAI(){
   if(applyDirect()){render();return;}
+  if(!proxyPossible(location.hostname))return;
   fetch('/api/ai/status').then(r=>r.ok?r.json():null).then(x=>{if(x?.configured){Object.assign(aiState,{ready:true,mode:'proxy',model:x.model,provider:x.provider,consentId:x.consentId,paired:x.paired,pairingRequired:x.pairingRequired});if(state.settings.aiConsent?.providerId!==x.consentId)state.settings.aiConsent=null;render();}}).catch(()=>{});
 }
 function generateLocal(){
@@ -240,7 +252,7 @@ document.addEventListener('click',e=>{
   switch(el.dataset.action){
     case 'close':$('#sheet').close();break;
     case 'generate':generateLocal();break;
-    case 'generate-smart':aiState.text=$('#ai-text')?.value||'';if(aiState.text.trim()&&(!state.settings?.aiConsent||!aiState.paired)){aiSettings();break;}if(aiState.ready&&state.settings?.aiConsent){if(ensureAI())withBusy(aiPlan);}else generateLocal();break;
+    case 'generate-smart':aiState.text=$('#ai-text')?.value||'';if(!aiState.text.trim()&&state.aiPending)commit(s=>s.aiPending=null);if(aiState.text.trim()&&(!state.settings?.aiConsent||!aiState.paired)){aiSettings();break;}if(aiState.ready&&state.settings?.aiConsent){if(ensureAI())withBusy(aiPlan,'plan');}else generateLocal();break;
     case 'ai-settings':aiSettings();break;
     case 'disable-ai':if(commit(s=>s.settings.aiConsent=null)){$('#sheet').close();render();toast('已关闭 AI 数据发送。');}break;
     case 'clear-ai-direct':if(commit(s=>{s.settings.aiDirect=null;if(s.settings.aiConsent?.providerId===aiState.consentId)s.settings.aiConsent=null;})){Object.assign(aiState,{ready:false,mode:null,model:null,provider:'',consentId:null,paired:false,pairingRequired:false});$('#sheet').close();probeAI();render();toast('已清除本设备上的 key。');}break;
@@ -251,13 +263,14 @@ document.addEventListener('click',e=>{
     case 'discard':showModal('撤下当前安排？','<p>这份未保存的安排将被移除，不会计入训练记录。已保存的训练和心得不受影响。</p><button class="primary" data-action="confirm-discard">撤下安排</button>');break;
     case 'confirm-discard':if(commit(s=>s.draft=null)){timer=null;paintTimer();rest=null;paintRest();$('#sheet').close();render();}break;
     case 'finish':finishDialog();break;
-    case 'ai-plan':aiState.text=$('#ai-text')?.value||'';if(ensureAI())withBusy(aiPlan);break;
-    case 'ai-adjust':{const text=$('#ai-adjust-text')?.value.trim();if(!text){toast('先写下想怎么调整。');break;}aiState.adjustText=text;if(ensureAI())withBusy(()=>aiAdjust(text));break;}
+    case 'ai-plan':aiState.text=$('#ai-text')?.value||'';if(ensureAI())withBusy(aiPlan,'plan');break;
+    case 'generate-offline':$('#sheet').close();generateLocal();break;
+    case 'ai-adjust':{const text=$('#ai-adjust-text')?.value.trim();if(!text){toast('先写下想怎么调整。');break;}aiState.adjustText=text;if(ensureAI())withBusy(()=>aiAdjust(text),'adjust');break;}
     case 'ai-log':if(ensureAI())logInputDialog();break;
     case 'ai-log-retry':logInputDialog(pendingLog?.text);break;
     case 'add-knowledge':knowledgeDialog();break;
     case 'observation':observationDialog();break;
-    case 'export':{try{const data=storageError?localStorage.getItem(STORE_KEY):JSON.stringify(sanitizeForExport(state),null,2);const url=URL.createObjectURL(new Blob([data||''],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`循动备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast('已导出当前浏览器的记录。');}catch{toast('当前浏览器无法读取存储，请保留此页面。');}break;}
+    case 'export':{let data;try{data=storageError?rawBackupText(localStorage.getItem(STORE_KEY)):JSON.stringify(sanitizeForExport(state),null,2);}catch{toast('本地数据无法解析，不能生成安全的备份。请保留此页面，先不要清除浏览器数据。');break;}try{const url=URL.createObjectURL(new Blob([data||''],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`循动备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast('已导出当前浏览器的记录。');}catch{toast('当前浏览器无法读取存储，请保留此页面。');}break;}
   }
 });
 document.addEventListener('change',e=>{if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness')request.readiness=e.target.value;if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
@@ -274,7 +287,7 @@ document.addEventListener('submit',async e=>{
     if(form.id==='ai-direct-form'){
       if(!f.get('consent'))throw new Error('需要你确认 key 存本设备并同意发送。');
       const base=String(f.get('base')||'').trim().replace(/\/$/,''),model=String(f.get('model')||'').trim(),keyInput=String(f.get('key')||'').trim();
-      if(!/^https:\/\//i.test(base))throw new Error('接口地址必须是 https:// 开头的安全地址。');
+      if(!allowedBase(base))throw new Error('本机直连目前只支持阿里云百炼：https://dashscope.aliyuncs.com/compatible-mode/v1');
       if(!model)throw new Error('请填写模型名。');
       const key=keyInput||directConfig(state)?.key;
       if(!key)throw new Error('请填写 API key。');
@@ -293,8 +306,8 @@ document.addEventListener('submit',async e=>{
       if(ok){if(set.feeling==='discomfort'){rest=null;paintRest();}else startRest(state.draft.items.find(i=>i.id===id));if(inSheet)setDialog(id);render();toast('本组已保存。');}return;
     }
     if(form.id==='ai-clarify-form'){const answer=f.get('answer').trim();if(!answer)throw new Error('写一点回答再继续。');$('#sheet').close();
-      if(form.dataset.next==='adjust'){const text=aiState.adjustText||'';withBusy(()=>aiAdjust(`${text}\n补充：${answer}`));}
-      else{aiState.text=[aiState.text.trim(),answer].filter(Boolean).join('\n补充：');withBusy(aiPlan);}return;}
+      if(form.dataset.next==='adjust'){const text=aiState.adjustText||'';withBusy(()=>aiAdjust(`${text}\n补充：${answer}`),'adjust');}
+      else{aiState.text=[aiState.text.trim(),answer].filter(Boolean).join('\n补充：');withBusy(aiPlan,'plan');}return;}
     if(form.id==='ai-log-form'){const text=f.get('text').trim();if(!text)throw new Error('先粘贴要整理的记录。');const button=form.querySelector('[type="submit"]');button.disabled=true;button.textContent='AI 正在整理…';
       withBusy(async()=>{try{const r=await askAI('log',buildLogInput(state,text),x=>validateLog(x,text));if(r.status==='clarify'){showModal('再确认一下',`<p>${esc(r.question)}</p><button class="secondary" data-action="ai-log-retry">回到原文修改</button>`);pendingLog={text,drafts:[],unparsed:[]};return;}pendingLog={text,...r};logConfirmDialog();}finally{button.disabled=false;button.textContent='开始整理';}});return;}
     if(form.id==='ai-log-confirm'){if(state.sessions.some(s=>pendingLog?.text&&s.rawText===pendingLog.text))throw new Error('这段原文已经导入过，请到训练记录中修改，避免重复入账。');const drafts=readLogConfirm(f);if(!drafts.length)throw new Error('至少保留一个动作。');const {sessions,observations}=logToRecords(drafts,pendingLog.text);

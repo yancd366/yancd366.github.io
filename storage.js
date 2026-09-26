@@ -27,6 +27,8 @@ export function normalizeStore(data){
 }
 // Never let an API key or AI authorisation ride into the app on export or import.
 export const sanitizeForExport=state=>({...state,settings:{...state.settings,aiConsent:null,aiDirect:null}});
+// 本地数据读不进来时的救援导出：同样脱敏；连 JSON 都解析不了就抛错，不输出可能带 key 的原文。
+export function rawBackupText(raw){const data=JSON.parse(raw);if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('本地数据无法解析。');return JSON.stringify(sanitizeForExport(data),null,2);}
 export function parseBackup(text){if(text.length>5_000_000)throw new Error('备份过大，请使用 5 MB 以内的 JSON 文件。');const s=normalizeStore(JSON.parse(text));s.settings={aiConsent:null,aiDirect:null};return s;}
 export function mergeBackup(current,incoming,restoreProfile=false){
   const next=structuredClone(current);let added=0;

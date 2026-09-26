@@ -5,6 +5,13 @@ import { buildMessages } from './ai.js';
 import { skillPrompts } from './skill-prompts.js';
 
 const TEMPERATURE = { intake: 0, plan: 0.4, log: 0 };
+// 直连只放行这张表里的服务；index.html 与 serve.mjs 的 connect-src 必须同步（有测试核对）。
+export const DIRECT_HOSTS = ['dashscope.aliyuncs.com'];
+export const allowedBase = base => { try { const u = new URL(base); return u.protocol === 'https:' && DIRECT_HOSTS.includes(u.hostname); } catch { return false; } };
+// 连不上模型（断网、超时、被拦截）与模型报错分开，界面据此提供本地退路。
+export class AINetworkError extends Error { constructor(message = '现在连不上 AI 服务。') { super(message); this.name = 'AINetworkError'; } }
+// Mac 代理只会出现在本机或局域网地址；静态托管站点不去探测 /api。
+export const proxyPossible = host => /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || host === '[::1]' || host.endsWith('.local');
 
 // The stored config, or null when the user has not opted into keeping a key on this device.
 export const directConfig = state => state?.settings?.aiDirect?.key ? state.settings.aiDirect : null;
@@ -41,10 +48,14 @@ export function directMessages(skill, input, repair) {
 export async function callDirect(skill, messages, cfg, { fetchImpl = fetch, timeoutMs = 90000 } = {}) {
   const base = String(cfg.base || '').replace(/\/$/, '');
   if (!base || !cfg.key || !cfg.model) throw new Error('本机 AI 直连未配置完整（接口地址 / key / 模型）。');
+  if (!allowedBase(base)) throw new Error('本机直连目前只支持阿里云百炼（https://dashscope.aliyuncs.com），请在 AI 设置里改正接口地址。');
   const body = { model: cfg.model, messages, temperature: TEMPERATURE[skill] ?? 0.2, response_format: { type: 'json_object' } };
   if (/dashscope/.test(base)) body.enable_thinking = false;
-  const res = await fetchImpl(`${base}/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` }, body: JSON.stringify(body) });
+  let res;
+  try {
+    res = await fetchImpl(`${base}/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` }, body: JSON.stringify(body) });
+  } catch { throw new AINetworkError(); }
   if (!res.ok) throw new Error(`AI 服务返回 ${res.status}：${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
   return { reply: parseReply(data.choices?.[0]?.message?.content), usage: data.usage || null };
