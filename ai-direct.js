@@ -4,7 +4,7 @@
 import { buildMessages } from './ai.js';
 import { skillPrompts } from './skill-prompts.js';
 
-const TEMPERATURE = { intake: 0, plan: 0.4, log: 0 };
+const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'knowledge-import': 0 };
 // 直连只放行这张表里的服务；index.html 与 serve.mjs 的 connect-src 必须同步（有测试核对）。
 export const DIRECT_HOSTS = ['dashscope.aliyuncs.com'];
 export const allowedBase = base => { try { const u = new URL(base); return u.protocol === 'https:' && DIRECT_HOSTS.includes(u.hostname); } catch { return false; } };

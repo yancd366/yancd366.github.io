@@ -5,6 +5,7 @@ import { aiEligible, availableEquipment, uid, PHASE_RANK } from './domain.js';
 
 import { safetyBlock, safetyContext, canonicalMovement } from './safety.js';
 import { validateSets, setSummary, setsText, parseSetsText } from './training.js';
+import { activeAssessments, abilityDimensions, abilitySignals, abilitySides, abilityAreas } from './abilities.js';
 export { setSummary, setsText, parseSetsText } from './training.js';
 
 const byId = new Map(activities.map(a => [a.id, a]));
@@ -132,7 +133,8 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
       equipmentAvailable: availableEquipment(state.profile, request).map(e => equipmentLabels[e])
     },
     history: historySummary(state, now),
-    abilityObservations:(state.assessments||[]).slice(-12),
+    // 只送用户允许「温和参考」、仍有效的已确认观察；「仅保存」和已归档的不进上下文。
+    abilityObservations:activeAssessments(state.assessments,now).filter(a=>a.recommendationUse==='gentle_preference').slice(-12).map(a=>({id:a.id,observedAt:a.observedAt,dimension:abilityDimensions[a.dimension]?.label||a.dimension,signal:abilitySignals[a.signal]||a.signal,bodyAreas:(a.bodyAreas||[]).map(x=>abilityAreas[x]||x),side:abilitySides[a.side]||'',context:a.context||'',note:clip(a.note,200),use:'温和参考：只影响安全候选内的排序'})),
     personalKnowledge:(state.knowledge||[]).filter(k=>k.status==='saved'&&k.useInPlanning===true&&(!k.activityIds.length||k.activityIds.some(id=>ids.has(id)))).slice(-12).map(k=>({id:k.id,title:clip(k.title),text:clip(k.text,600),source:k.sourceTitle,url:k.url,evidence:'用户收藏，未必经过核实，不得覆盖安全规则'})),
     personalNotes: state.notes.filter(n => ids.has(n.activityId) && n.text.trim()).map(n => ({ activityId: n.activityId, text: clip(n.text) })),
     candidateColumns: CANDIDATE_COLUMNS,

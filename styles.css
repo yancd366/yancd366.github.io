@@ -96,3 +96,4 @@ dialog{border:0;border-radius:21px;background:#fff;color:var(--text);width:min(6
 .timed-start{font-size:16px}
 .timed-manual>summary{cursor:pointer;color:var(--muted);font-size:13px}
 @media(max-width:700px){.run-top{padding:18px 20px 16px}.run-card{padding:20px 18px}.run-title{font-size:21px}.run-actions{gap:8px}.run-all>summary,.run-all-list{padding-left:18px;padding-right:18px}.rest{bottom:calc(84px + env(safe-area-inset-bottom))}.rest-time{font-size:26px}.timer{bottom:calc(84px + env(safe-area-inset-bottom))}.timer-big{font-size:56px}}
+.ability-group{margin-top:18px}.ability-group h3{font-size:15px}.ability-group.review h3{color:#bd4326}.ability-entry{border-top:1px solid var(--line);padding:12px 0}.ability-entry .field-row{margin-top:8px}.capacity>.primary{margin-bottom:6px}

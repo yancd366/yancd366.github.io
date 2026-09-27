@@ -6,8 +6,9 @@ import { normalizeStore,parseBackup,mergeBackup,sanitizeForExport,rawBackupText 
 import { directConfig, directConsentId, providerHost, directMessages, callDirect, allowedBase, AINetworkError, proxyPossible } from './ai-direct.js';
 import { validateSets, restDefault, isTimed, timeTarget } from './training.js';
 import { safetyBlock, textMentionsLimits } from './safety.js';
-import { abilityEntry } from './abilities.js';
-import { exerciseLogForm,sessionEditForm,assessmentForm,activityName } from './experience.js';
+import { abilityEntry, abilityBlock, allowedUses, buildAbilityIntakeInput, validateAbilityIntake, abilityRecords } from './abilities.js';
+import { captureEntry, captureHasEvidence, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, capturePlatforms } from './knowledge.js';
+import { exerciseLogForm,sessionEditForm,assessmentForm,abilityIntakeForm,abilityConfirmForm,activityName } from './experience.js';
 import { applyReplacement } from './domain.js';
 import { pauseActiveTimer, resumeActiveTimer } from './timing.js';
 import { routes, shell, todayHTML, recordsHTML, libraryHTML, knowledgeHTML, bodyHTML } from './views.js';
@@ -18,12 +19,12 @@ let offlineStatus=window.isSecureContext?'正在准备离线文件…':'当前 H
 function showOfflineStatus(message){offlineStatus=message;document.querySelectorAll('[data-offline-status]').forEach(el=>{el.textContent=message;});}
 try {
   const raw=localStorage.getItem(STORE_KEY);lastStored=raw;state=raw?normalizeStore(JSON.parse(raw)):initialState();
-  if(state.schemaVersion!==SCHEMA_VERSION||!Array.isArray(state.sessions)||!state.profile||!Array.isArray(state.notes)||!Array.isArray(state.knowledge)||!Array.isArray(state.observations))throw new Error('记录格式不兼容');
+  if(state.schemaVersion!==SCHEMA_VERSION||!Array.isArray(state.sessions)||!state.profile||!Array.isArray(state.notes)||!Array.isArray(state.knowledge)||!Array.isArray(state.captures)||!Array.isArray(state.observations))throw new Error('记录格式不兼容');
 }catch{state=initialState();storageError=true;}
 let page=routes[location.hash.slice(1)]?location.hash.slice(1):'today';
 let request=structuredClone(state.draft?.request||{minutes:20,place:'home',focus:state.profile.focus,readiness:'normal',targetRegions:[]});
 let filters={search:'',category:'all',system:'all',place:'all',personal:'all'},knowledgeFilter='all',toastTimer;
-const aiState={ready:false,busy:false,mode:null,text:'',model:null,provider:'',consentId:null,paired:false,pairingRequired:false,optionsOpen:false,adjustText:''};let pendingLog=null;
+const aiState={ready:false,busy:false,mode:null,text:'',model:null,provider:'',consentId:null,paired:false,pairingRequired:false,optionsOpen:false,adjustText:''};let pendingLog=null,pendingAbility=null,pendingKnowledge=null;
 aiState.text=state.aiPending?.text||'';
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4500);}
 function commit(change){
@@ -81,7 +82,7 @@ function aiOfflineDialog(kind){
 function clarifyDialog(question,next){showModal('再确认一下',`<p>${esc(question)}</p><form id="ai-clarify-form" data-next="${next}"><label>你的回答<textarea name="answer" required maxlength="500"></textarea></label><button class="primary full" type="submit">继续 ${icon('arrow')}</button></form>`);}
 function referDialog(reason){showModal('先照顾好身体',`<p>${esc(reason)}</p><p class="helper left">这次不自动安排训练。可以先记下现在的状态。</p><button class="primary" data-action="observation">记录当前状态</button>`);}
 async function aiPlan(){
-  const blocked=safetyBlock(state.profile,request);if(blocked)return referDialog(blocked);
+  const blocked=safetyBlock(state.profile,request)||abilityBlock(state.assessments);if(blocked)return referDialog(blocked);
   const text=aiState.text.trim(),defaults={...request,targetRegions:request.targetRegions||[],userText:text};
   let req={...defaults,equipment:null,preferredSystems:[],avoid:[],bodyToday:'',preferences:''};
   if(text){const r=await askAI('intake',buildIntakeInput(state,text,defaults),x=>validateIntake(x,defaults));if(r.status==='clarify')return clarifyDialog(r.question,'plan');if(r.status==='refer')return referDialog(r.reason);req=r.request;}
@@ -93,10 +94,25 @@ async function aiAdjust(instruction){
   const p=state.draft;
   const intake=await askAI('intake',buildIntakeInput(state,instruction,p.request),x=>validateIntake(x,{...p.request,userText:instruction}));
   if(intake.status==='clarify')return clarifyDialog(intake.question,'adjust');if(intake.status==='refer')return referDialog(intake.reason);
-  const req={...p.request,...intake.request},blocked=safetyBlock(state.profile,req);if(blocked)return referDialog(blocked);
+  const req={...p.request,...intake.request},blocked=safetyBlock(state.profile,req)||abilityBlock(state.assessments);if(blocked)return referDialog(blocked);
   const r=await askAI('plan',buildPlanInput(state,req,{previousPlan:p,instruction}),x=>validatePlan(x,{request:req,profile:state.profile}));
   if(r.status==='clarify')return clarifyDialog(r.question,'adjust');if(r.status==='refer')return referDialog(r.reason);
   if(commit(s=>s.draft=r.plan)){request=structuredClone(r.plan.request);aiState.adjustText='';toast(r.warnings[0]||'已调整，重量请按新动作重新选择。');}
+}
+// 能力整理：AI 只出草稿；用户逐条确认后才写入 abilityEvidence / assessments。
+function abilityIntake(meta){
+  pendingAbility={...meta};toast('AI 正在整理，请稍等…');
+  withBusy(async()=>{
+    const r=await askAI('ability-intake',buildAbilityIntakeInput(state,meta),x=>validateAbilityIntake(x,meta));
+    if(r.status==='clarify')return clarifyDialog(r.question,'ability');
+    if(r.status==='refer')return referDialog(r.reason);
+    pendingAbility={...meta,...r};showModal('核对整理结果',abilityConfirmForm(pendingAbility));
+  });
+}
+function readAbilityConfirm(f){
+  return pendingAbility.drafts.flatMap((d,n)=>{if(!f.get(`keep_${n}`))return [];
+    const use=f.get(`use_${n}`);
+    return [{dimension:f.get(`dimension_${n}`),signal:f.get(`signal_${n}`),bodyAreas:f.getAll(`area_${n}`),side:f.get(`side_${n}`),context:f.get(`context_${n}`)||'',note:f.get(`note_${n}`)||'',observedAt:f.get(`observedAt_${n}`),evidenceQuote:d.evidenceQuote,recommendationUse:allowedUses(d).includes(use)?use:'off'}];});
 }
 function logInputDialog(text=''){showModal('粘贴训练记录',`<form id="ai-log-form"><label>备忘录、聊天记录或一段话<textarea name="text" required maxlength="20000" rows="9" placeholder="例如：\n9.23 练胸\n卧推 60kg 3×8，最后一组只做了 6 个\n肩有点酸\n昨天跑步 5 公里 32 分钟">${esc(text)}</textarea></label><p class="helper left">AI 会整理成训练记录草稿，逐条核对后才会保存。原文没写的重量、次数会留空。</p><button class="primary full" type="submit">开始整理 ${icon('arrow')}</button></form>`);}
 const actOptions=selected=>`<option value="">不关联动作库（自定义动作）</option>${Object.entries(systems).map(([sys,label])=>`<optgroup label="${label}">${activities.filter(a=>a.system===sys).map(a=>`<option value="${a.id}" ${a.id===selected?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>`).join('')}`;
@@ -117,6 +133,27 @@ function finishDialog(){
 function knowledgeDialog(id){
   const k=state.knowledge.find(k=>k.id===id);
   showModal(k?'编辑收藏':'收藏一个好想法',`<form id="knowledge-form" data-id="${esc(id||'')}"><label>标题<input name="title" required maxlength="120" value="${esc(k?.title||'')}" placeholder="它在讲什么？"></label><label>来源链接<input name="url" type="url" value="${esc(k?.url||'')}" placeholder="https://…（可选）"></label><label>作者或来源<input name="sourceTitle" maxlength="180" value="${esc(k?.sourceTitle||'')}" placeholder="创作者名称、书籍或自己的思考"></label><label>摘录 / 我的想法<textarea name="text" maxlength="8000" placeholder="把值得保留的内容贴在这里，也可以写下自己的问题。">${esc(k?.text||'')}</textarea></label><label class="checkbox-line"><input type="checkbox" name="useInPlanning" ${k?.useInPlanning?'checked':''}>允许推荐时参考这条个人收藏（整理入库后生效）</label><label>关联动作（可选）<select name="activityId"><option value="">暂不关联</option>${activities.map(a=>`<option value="${a.id}" ${k?.activityIds?.[0]===a.id?'selected':''}>${a.name}</option>`).join('')}</select></label><p class="helper left">保存到私人收件箱。链接不会自动抓取；你可以先保留自己的摘录。</p><button type="submit" class="primary full">保存收藏 ${icon('bookmark')}</button></form>`);
+}
+function captureDialog(id){
+  const capture=id?(state.captures||[]).find(c=>c.id===id):null;
+  showModal(capture?'补充分享内容':'收藏一条分享',`<form id="capture-form" data-id="${esc(capture?.id||'')}"><label>分享链接<input name="rawUrl" type="url" inputmode="url" value="${esc(capture?.rawUrl||'')}" placeholder="抖音、小红书、B 站或网页链接"></label><label>作者或来源（可选）<input name="sourceTitle" maxlength="180" value="${esc(capture?.sourceTitle||'')}" placeholder="例如：谭成义、视频标题"></label><label>分享文字 / 文案 / 字幕<textarea name="shareText" maxlength="8000" rows="8" placeholder="粘贴视频文案、字幕或你想留下的原话。只有链接也能先保存，但不会让 AI 猜视频内容。">${esc(capture?.shareText||'')}</textarea></label><label>我为什么想收藏（可选）<textarea name="userNote" maxlength="1000" placeholder="例如：想试试他的髋部训练思路。">${esc(capture?.userNote||'')}</textarea></label><p class="helper left">原始链接和文字会先保存在本机收件箱。只有你提供了来源文字，才会发送给已启用的 AI 整理成草稿。</p><button type="submit" class="primary full">${capture?'保存补充内容':'存入收件箱'} ${icon('bookmark')}</button></form><button class="secondary full" data-action="paste-capture">从剪贴板粘贴</button>`);
+}
+function knowledgeConfirmDialog(){
+  const {captureId,card}=pendingKnowledge;
+  const capture=(state.captures||[]).find(c=>c.id===captureId);
+  if(!capture)return toast('找不到这条分享，请刷新后重试。');
+  showModal('核对知识卡',`<p class="muted">每条观点都附着你提供的原文。请核对后保存；没有勾选的观点不会进入知识卡。</p><form id="knowledge-confirm-form"><label>标题<input name="title" required maxlength="120" value="${esc(card.title)}"></label><label>摘要（可选）<textarea name="summary" maxlength="700">${esc(card.summary||'')}</textarea></label>${card.claims.map((claim,n)=>`<fieldset class="log-item"><label class="checkbox-line"><input type="checkbox" name="keep_${n}" checked> 保留第 ${n+1} 条</label><label>整理后的观点<textarea name="claim_${n}" required maxlength="500">${esc(claim.text)}</textarea></label><p class="small muted">来源原文：「${esc(claim.evidenceQuote)}」</p></fieldset>`).join('')}<fieldset><legend>关联现有动作（可选）</legend>${card.activityLinks.map((link,n)=>`<label class="checkbox-line"><input type="checkbox" name="linkKeep_${n}" checked> <select name="link_${n}">${activities.map(a=>`<option value="${a.id}" ${a.id===link.activityId?'selected':''}>${esc(a.name)}</option>`).join('')}</select><span class="small muted">原文：「${esc(link.evidenceQuote)}」</span></label>`).join('')||'<p class="small muted">AI 没有找到可由原文核对的现有动作。</p>'}</fieldset><label class="checkbox-line"><input type="checkbox" name="useInPlanning">允许以后推荐时参考这张个人知识卡</label><p class="helper left">这张卡来自你收藏的内容，观点未经专业审核。即使允许参考，也不能绕过当天的安全、器械和时间限制。</p><button class="primary full" type="submit">保存到个人知识库 ${icon('check')}</button></form>`);
+}
+function analyzeCapture(captureId){
+  const capture=(state.captures||[]).find(c=>c.id===captureId);
+  if(!capture)return toast('找不到这条分享，请刷新后重试。');
+  if(!captureHasEvidence(capture)){captureDialog(captureId);toast('先补充文案、字幕或截图中的文字，才能整理。');return;}
+  if(!ensureAI())return;
+  withBusy(async()=>{
+    const r=await askAI('knowledge-import',buildKnowledgeImportInput(state,capture),x=>validateKnowledgeImport(x,capture));
+    if(r.status==='clarify'){pendingKnowledge={captureId,card:null};showModal('还差一点内容',`<p>${esc(r.question)}</p><button class="primary full" data-edit-capture="${esc(captureId)}">补充来源文字</button>`);return;}
+    pendingKnowledge={captureId,card:r.card};knowledgeConfirmDialog();
+  });
 }
 function observationDialog(){showModal('记一下身体状态',`<form id="observation-form"><label>现在的感受<textarea name="text" required maxlength="4000" placeholder="例如：昨天久坐比较多，今天颈部有些僵。写下时间、部位和哪些情况会加重。"></textarea></label><p class="helper left">保留你的原话，作为之后讨论的依据。持续或加重的不适需要专业评估。</p><button class="primary full" type="submit">保存随记 ${icon('check')}</button></form>`);}
 function sessionDialog(id){const s=state.sessions.find(x=>x.id===id);if(s)showModal(dateText(s.endedAt)+'的训练',sessionEditForm(s));}
@@ -220,6 +257,7 @@ function probeAI(){
   fetch('/api/ai/status').then(r=>r.ok?r.json():null).then(x=>{if(x?.configured){Object.assign(aiState,{ready:true,mode:'proxy',model:x.model,provider:x.provider,consentId:x.consentId,paired:x.paired,pairingRequired:x.pairingRequired});if(state.settings.aiConsent?.providerId!==x.consentId)state.settings.aiConsent=null;render();}}).catch(()=>{});
 }
 function generateLocal(){
+  const block=abilityBlock(state.assessments);if(block){showModal('暂时无法安排',`<p>${esc(block)}</p><button class="secondary" data-nav="body">去看这条记录</button>`);return;}
   try{const p=createPlan(request,state.profile,state.sessions);if(p.blocked){showModal('暂时无法安排',`<p>${esc(p.reason)}</p><button class="secondary" data-action="close">调整选择</button>`);return;}if(commit(s=>s.draft=p))render();}catch(e){toast(e.message);}
 }
 function importDialog(){
@@ -234,6 +272,10 @@ document.addEventListener('click',e=>{
   if(el.dataset.timerCtrl){if(!timer)return;const c=el.dataset.timerCtrl;if(c==='mute'){timer.muted=!timer.muted;persistTimer();paintTimer();}else if(c==='cancel')stopTimer(false);else if(c==='stop')stopTimer(true);else if(c==='resume')resumeTimer();return;}
   if(el.hasAttribute('data-goto')){if(timer){toast('请先结束或取消当前计时。');return;}const idx=Number(el.dataset.goto);if(commit(s=>s.draft.cursor=idx))render();return;}
   if(el.hasAttribute('data-next')){if(timer){toast('请先结束或取消当前计时。');return;}if(commit(s=>s.draft.cursor=nextCursor(s.draft,s.draft.cursor??0)))render();return;}
+  if(el.dataset.abilityArchive){const id=el.dataset.abilityArchive;if(commit(s=>{const a=s.assessments.find(a=>a.id===id);a.status=a.status==='archived'?'active':'archived';}))render();return;}
+  if(el.dataset.abilityDelete){showModal('删除这条观察？','<p>观察和只属于它的原话都会删除，不影响训练记录。</p><button class="primary" data-action="confirm-ability-delete" data-id="'+esc(el.dataset.abilityDelete)+'">删除</button>');return;}
+  if(el.dataset.analyzeCapture){analyzeCapture(el.dataset.analyzeCapture);return;}
+  if(el.dataset.editCapture){captureDialog(el.dataset.editCapture);return;}
   if(el.dataset.personal){filters.personal=el.dataset.personal;render();return;}
   if(el.dataset.nav){navigate(el.dataset.nav);return;}
   if(el.dataset.detail){detail(el.dataset.detail);return;}
@@ -257,9 +299,12 @@ document.addEventListener('click',e=>{
     case 'disable-ai':if(commit(s=>s.settings.aiConsent=null)){$('#sheet').close();render();toast('已关闭 AI 数据发送。');}break;
     case 'clear-ai-direct':if(commit(s=>{s.settings.aiDirect=null;if(s.settings.aiConsent?.providerId===aiState.consentId)s.settings.aiConsent=null;})){Object.assign(aiState,{ready:false,mode:null,model:null,provider:'',consentId:null,paired:false,pairingRequired:false});$('#sheet').close();probeAI();render();toast('已清除本设备上的 key。');}break;
     case 'assessment':showModal('新增能力观察',assessmentForm());break;
+    case 'ability-intake':if(ensureAI())showModal('整理身体与能力情况',abilityIntakeForm(pendingAbility||{}));break;
+    case 'ability-retry':showModal('整理身体与能力情况',abilityIntakeForm(pendingAbility||{}));break;
+    case 'confirm-ability-delete':{const id=el.dataset.id;if(commit(s=>{s.assessments=s.assessments.filter(a=>a.id!==id);const used=new Set(s.assessments.flatMap(a=>a.evidenceIds||[]));s.abilityEvidence=(s.abilityEvidence||[]).filter(e=>used.has(e.id));})){$('#sheet').close();render();toast('已删除这条观察。');}break;}
     case 'import':importDialog();break;
     case 'manual-log':manualLogDialog();break;
-    case 'start':{const reason=checkPlanStart(state.draft,state.profile);if(reason){toast(reason);break;}if(commit(s=>{s.draft.startedAt=new Date().toISOString();s.draft.cursor=0;}))render();break;}
+    case 'start':{const reason=checkPlanStart(state.draft,state.profile)||abilityBlock(state.assessments);if(reason){toast(reason);break;}if(commit(s=>{s.draft.startedAt=new Date().toISOString();s.draft.cursor=0;}))render();break;}
     case 'discard':showModal('撤下当前安排？','<p>这份未保存的安排将被移除，不会计入训练记录。已保存的训练和心得不受影响。</p><button class="primary" data-action="confirm-discard">撤下安排</button>');break;
     case 'confirm-discard':if(commit(s=>s.draft=null)){timer=null;paintTimer();rest=null;paintRest();$('#sheet').close();render();}break;
     case 'finish':finishDialog();break;
@@ -269,11 +314,21 @@ document.addEventListener('click',e=>{
     case 'ai-log':if(ensureAI())logInputDialog();break;
     case 'ai-log-retry':logInputDialog(pendingLog?.text);break;
     case 'add-knowledge':knowledgeDialog();break;
+    case 'capture':captureDialog();break;
+    case 'paste-capture':{
+      navigator.clipboard?.readText?.().then(text=>{
+        const value=String(text||'').trim(),url=/^https?:\/\//i.test(value)?value:'';
+        const dialog=$('#sheet'),form=dialog.querySelector('#capture-form');if(!form)return;
+        if(url)form.rawUrl.value=url;else form.shareText.value=value;
+        toast(url?'已粘贴链接。':'已粘贴文字。');
+      }).catch(()=>toast('无法读取剪贴板，请手动粘贴。'));
+      break;
+    }
     case 'observation':observationDialog();break;
     case 'export':{let data;try{data=storageError?rawBackupText(localStorage.getItem(STORE_KEY)):JSON.stringify(sanitizeForExport(state),null,2);}catch{toast('本地数据无法解析，不能生成安全的备份。请保留此页面，先不要清除浏览器数据。');break;}try{const url=URL.createObjectURL(new Blob([data||''],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`循动备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast('已导出当前浏览器的记录。');}catch{toast('当前浏览器无法读取存储，请保留此页面。');}break;}
   }
 });
-document.addEventListener('change',e=>{if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness')request.readiness=e.target.value;if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
+document.addEventListener('change',e=>{if(e.target.dataset.abilityUse){const id=e.target.dataset.abilityUse,use=e.target.value,a=state.assessments.find(a=>a.id===id);if(a&&allowedUses(a).includes(use)&&commit(s=>s.assessments.find(a=>a.id===id).recommendationUse=use)){render();toast(use==='gentle_preference'?'已设为温和参考，会参与之后的安排。':'已更新用途。');}else render();return;}if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness')request.readiness=e.target.value;if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
 document.addEventListener('input',e=>{if(e.target.id==='ai-text')aiState.text=e.target.value;if(e.target.id==='activity-search'){const pos=e.target.selectionStart;filters.search=e.target.value;render();const input=$('#activity-search');input.focus();input.setSelectionRange(pos,pos);}});
 document.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.target,f=new FormData(form);
@@ -296,6 +351,34 @@ document.addEventListener('submit',async e=>{
       if(ok){applyDirect();$('#sheet').close();render();toast('本机直连已启用，出门也能用 AI。');return;}
     }
     if(form.id==='assessment-form')ok=commit(s=>s.assessments.push(abilityEntry(Object.fromEntries(f))));
+    if(form.id==='ability-intake-form'){const rawText=String(f.get('rawText')||'').trim();if(!rawText)throw new Error('先写一点最近的情况。');$('#sheet').close();abilityIntake({rawText,source:f.get('source'),observedOn:f.get('observedOn')});return;}
+    if(form.id==='ability-confirm-form'){const drafts=readAbilityConfirm(f);if(!drafts.length){pendingAbility=null;$('#sheet').close();toast('没有勾选任何条目，什么也没保存。');return;}
+      const {evidence,assessments}=abilityRecords(drafts,pendingAbility);ok=commit(s=>{s.abilityEvidence=[...(s.abilityEvidence||[]),evidence];s.assessments.push(...assessments);});
+      if(ok){pendingAbility=null;$('#sheet').close();render();toast(`已保存 ${assessments.length} 条观察。`);}return;}
+    if(form.id==='capture-form'){
+      const input={rawUrl:f.get('rawUrl'),sourceTitle:f.get('sourceTitle'),shareText:f.get('shareText'),userNote:f.get('userNote')};
+      const oldId=form.dataset.id;
+      if(oldId){
+        const old=(state.captures||[]).find(c=>c.id===oldId);if(!old)throw new Error('找不到这条分享，请刷新后重试。');
+        const draft=captureEntry(input,{...state,captures:state.captures.filter(c=>c.id!==oldId)}),nextCapture={...draft.capture,id:old.id,knowledgeId:old.knowledgeId,capturedAt:old.capturedAt};
+        ok=commit(s=>{const c=s.captures.find(c=>c.id===oldId);Object.assign(c,nextCapture);const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')Object.assign(k,{title:nextCapture.sourceTitle||capturePlatforms[nextCapture.platform]+' 分享',url:nextCapture.rawUrl,sourceTitle:nextCapture.sourceTitle||capturePlatforms[nextCapture.platform],text:nextCapture.shareText?'等待 AI 根据你提供的文字整理。':'已保存链接，待补充文案、字幕或截图中的文字。',updatedAt:new Date().toISOString()});});
+      }else{
+        const created=captureEntry(input,state);ok=commit(s=>{s.captures.push(created.capture);s.knowledge.push(created.knowledge);});
+        if(ok)form.dataset.createdCapture=created.capture.id;
+      }
+      if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。补充文案、字幕或截图中的文字后再整理。');}return;
+    }
+    if(form.id==='knowledge-confirm-form'){
+      if(!pendingKnowledge?.card)throw new Error('整理草稿已失效，请重新整理。');
+      const capture=(state.captures||[]).find(c=>c.id===pendingKnowledge.captureId);if(!capture)throw new Error('找不到这条来源，请刷新后重试。');
+      const claims=pendingKnowledge.card.claims.flatMap((claim,n)=>f.get(`keep_${n}`)?[{text:String(f.get(`claim_${n}`)||'').trim(),evidenceQuote:claim.evidenceQuote}]:[]);
+      if(!claims.length)throw new Error('至少保留一条有来源依据的观点。');
+      const activityLinks=pendingKnowledge.card.activityLinks.flatMap((link,n)=>f.get(`linkKeep_${n}`)?[{activityId:String(f.get(`link_${n}`)||''),evidenceQuote:link.evidenceQuote}]:[]);
+      const checked=validateKnowledgeImport({status:'ok',card:{title:f.get('title'),summary:f.get('summary'),claims,activityLinks}},capture);
+      if(!checked.ok)throw new Error(checked.errors.slice(0,2).join('；'));
+      ok=commit(s=>{const k=applyKnowledgeCard(s,pendingKnowledge.captureId,checked.card);k.useInPlanning=Boolean(f.get('useInPlanning'));});
+      if(ok){pendingKnowledge=null;$('#sheet').close();render();toast('已保存知识卡；来源文字和依据都保留在本机。');}return;
+    }
     if(form.id==='import-confirm-form'){const result=mergeBackup(state,importDraft,Boolean(f.get('profile')));ok=commit(s=>Object.assign(s,result.state));if(ok){importDraft=null;toast('已合并 '+result.added+' 条记录。');}}
     if(form.id==='manual-log-form'){const {sessions}=logToRecords([{date:f.get('date'),durationMinutes:f.get('minutes')===''?null:Number(f.get('minutes')),effort:null,feedback:f.get('note'),items:[{name:f.get('name').trim(),activityId:null,sets:[],note:f.get('note'),durationMinutes:null,distanceKm:null,confirmed:true}]}],'');ok=commit(s=>{s.sessions.push(...sessions);s.sessions.sort((a,b)=>new Date(a.endedAt)-new Date(b.endedAt));});}
     if(form.id==='set-form'){
@@ -306,7 +389,8 @@ document.addEventListener('submit',async e=>{
       if(ok){if(set.feeling==='discomfort'){rest=null;paintRest();}else startRest(state.draft.items.find(i=>i.id===id));if(inSheet)setDialog(id);render();toast('本组已保存。');}return;
     }
     if(form.id==='ai-clarify-form'){const answer=f.get('answer').trim();if(!answer)throw new Error('写一点回答再继续。');$('#sheet').close();
-      if(form.dataset.next==='adjust'){const text=aiState.adjustText||'';withBusy(()=>aiAdjust(`${text}\n补充：${answer}`),'adjust');}
+      if(form.dataset.next==='ability'){abilityIntake({...pendingAbility,rawText:`${pendingAbility.rawText}\n补充：${answer}`});}
+      else if(form.dataset.next==='adjust'){const text=aiState.adjustText||'';withBusy(()=>aiAdjust(`${text}\n补充：${answer}`),'adjust');}
       else{aiState.text=[aiState.text.trim(),answer].filter(Boolean).join('\n补充：');withBusy(aiPlan,'plan');}return;}
     if(form.id==='ai-log-form'){const text=f.get('text').trim();if(!text)throw new Error('先粘贴要整理的记录。');const button=form.querySelector('[type="submit"]');button.disabled=true;button.textContent='AI 正在整理…';
       withBusy(async()=>{try{const r=await askAI('log',buildLogInput(state,text),x=>validateLog(x,text));if(r.status==='clarify'){showModal('再确认一下',`<p>${esc(r.question)}</p><button class="secondary" data-action="ai-log-retry">回到原文修改</button>`);pendingLog={text,drafts:[],unparsed:[]};return;}pendingLog={text,...r};logConfirmDialog();}finally{button.disabled=false;button.textContent='开始整理';}});return;}
