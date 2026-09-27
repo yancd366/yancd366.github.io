@@ -7,6 +7,12 @@ const clip=(value,max)=>String(value||'').trim().slice(0,max);
 const squash=value=>String(value||'').toLowerCase().replace(/[\s，,。.;；:：、!！?？()（）\[\]【】"'“”‘’\-—_~～]/g,'');
 const date=now=>now.toISOString();
 
+export function splitSharedText(value){
+  const text=String(value||'').trim();
+  const rawUrl=text.match(/https?:\/\/[^\s，。；;）)]+/i)?.[0]?.replace(/["'”’!?！？]+$/,'')||'';
+  return {rawUrl,shareText:rawUrl?text.replace(rawUrl,'').trim():text};
+}
+
 export const capturePlatforms={
   douyin:'抖音', xiaohongshu:'小红书', bilibili:'B 站', web:'网页', other:'其他来源'
 };
@@ -24,9 +30,10 @@ export function canonicalCaptureURL(value){
 export function capturePlatform(url){
   try{
     const host=new URL(url).hostname.toLowerCase();
-    if(host.includes('douyin.com'))return 'douyin';
-    if(host.includes('xiaohongshu.com')||host.includes('xhslink.com'))return 'xiaohongshu';
-    if(host.includes('bilibili.com')||host==='b23.tv')return 'bilibili';
+    const matches=s=>host===s||host.endsWith('.'+s);
+    if(matches('douyin.com')||matches('iesdouyin.com'))return 'douyin';
+    if(matches('xiaohongshu.com')||matches('xhslink.com')||matches('xhslink.cn'))return 'xiaohongshu';
+    if(matches('bilibili.com')||host==='b23.tv')return 'bilibili';
     return 'web';
   }catch{return 'other';}
 }
@@ -39,9 +46,10 @@ export function captureTitle(capture){
 }
 
 export function captureEntry(input,state,now=new Date()){
-  const rawUrl=clip(input.rawUrl,2000);
+  const shared=splitSharedText(input.shareText);
+  const rawUrl=clip(input.rawUrl||shared.rawUrl,2000);
   const canonicalUrl=canonicalCaptureURL(rawUrl);
-  const shareText=clip(input.shareText,8000);
+  const shareText=clip(input.rawUrl?input.shareText:shared.shareText,8000);
   const userNote=clip(input.userNote,1000);
   const sourceTitle=clip(input.sourceTitle,180);
   if(rawUrl&&!canonicalUrl)throw new Error('请填写 http 或 https 分享链接。');
@@ -54,12 +62,25 @@ export function captureEntry(input,state,now=new Date()){
   return {capture,knowledge};
 }
 
-export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1));
+export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.transcript?.text,1));
 export const captureForKnowledge=(state,id)=> (state.captures||[]).find(c=>c.knowledgeId===id)||null;
+
+export function captureEvidence(capture){
+  const pieces=[];
+  if(capture?.shareText?.trim())pieces.push({id:'user-text',kind:'user_text',text:clip(capture.shareText,8000)});
+  const transcript=capture?.transcript;
+  if(transcript?.text?.trim()){
+    const segments=Array.isArray(transcript.segments)?transcript.segments.filter(s=>s?.text?.trim()):[];
+    if(segments.length)segments.slice(0,150).forEach((s,n)=>pieces.push({id:`asr:${n}`,kind:'asr_transcript',text:clip(s.text,1000),startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs)}));
+    else pieces.push({id:'asr:full',kind:'asr_transcript',text:clip(transcript.text,30000),startMs:null,endMs:null});
+  }
+  return pieces;
+}
 
 export function buildKnowledgeImportInput(state,capture){
   return {
-    source:{platform:capturePlatforms[capture.platform]||capture.platform, url:capture.rawUrl||null, creator:clip(capture.sourceTitle,180)||null, shareText:clip(capture.shareText,8000), userIntent:clip(capture.userNote,1000)||null},
+    source:{platform:capturePlatforms[capture.platform]||capture.platform, url:capture.rawUrl||null, creator:clip(capture.resolvedSource?.creatorName||capture.sourceTitle,180)||null, shareText:clip(capture.shareText,8000), userIntent:clip(capture.userNote,1000)||null, metadata:{title:clip(capture.resolvedSource?.title,180)||null,description:clip(capture.resolvedSource?.description,2000)||null}},
+    evidence:captureEvidence(capture),
     catalog:activities.map(a=>({id:a.id,name:a.name,aliases:a.aliases.slice(0,5)})),
     existingTitles:(state.knowledge||[]).filter(k=>k.captureId!==capture.id).slice(-40).map(k=>clip(k.title,120)),
     limits:{maxClaims:5,maxActivityLinks:4}
@@ -74,8 +95,8 @@ const activityMatchesEvidence=(activity,quote)=>{
 };
 
 export function validateKnowledgeImport(output,capture){
-  const source=clip(capture?.shareText,8000),errors=[];
-  if(!source)return {ok:false,errors:['没有可供核对的来源文字；请先补充文案、字幕或截图中的文字。']};
+  const pieces=captureEvidence(capture),errors=[];
+  if(!pieces.length)return {ok:false,errors:['没有可供核对的来源文字或逐字稿。']};
   if(!output||!['ok','clarify'].includes(output.status))return {ok:false,errors:['status 应为 ok / clarify']};
   if(output.status==='clarify')return output.question?.trim?.()?{ok:true,status:'clarify',question:clip(output.question,220)}:{ok:false,errors:['clarify 需要 question']};
   const card=output.card;
@@ -86,10 +107,11 @@ export function validateKnowledgeImport(output,capture){
   const drafts=[];
   claims.slice(0,5).forEach((claim,n)=>{
     const at=`第 ${n+1} 条观点`,text=clip(claim?.text,500),evidenceQuote=clip(claim?.evidenceQuote,500);
+    const piece=claim?.evidenceId?pieces.find(p=>p.id===claim.evidenceId&&validEvidence(evidenceQuote,p.text)):pieces.find(p=>validEvidence(evidenceQuote,p.text));
     if(!text)errors.push(`${at}需要 text`);
-    if(!validEvidence(evidenceQuote,source))errors.push(`${at} evidenceQuote 必须逐字摘自来源文字`);
+    if(!piece)errors.push(`${at} evidenceQuote 必须逐字摘自对应来源文字`);
     if(forbidden.test(text))errors.push(`${at}不能写诊断、治疗或矫正承诺`);
-    if(text&&validEvidence(evidenceQuote,source)&&!forbidden.test(text))drafts.push({text,evidenceQuote});
+    if(text&&piece&&!forbidden.test(text))drafts.push({text,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,...(piece.kind==='asr_transcript'?{startMs:piece.startMs,endMs:piece.endMs}:{})});
   });
   const links=[];
   const byId=new Map(activities.map(a=>[a.id,a]));
@@ -98,11 +120,12 @@ export function validateKnowledgeImport(output,capture){
   const seen=new Set();
   rawLinks.slice(0,4).forEach((link,n)=>{
     const activity=byId.get(link?.activityId),evidenceQuote=clip(link?.evidenceQuote,500);
+    const piece=link?.evidenceId?pieces.find(p=>p.id===link.evidenceId&&validEvidence(evidenceQuote,p.text)):pieces.find(p=>validEvidence(evidenceQuote,p.text));
     if(!activity)errors.push(`第 ${n+1} 个关联动作不在动作库中`);
     else if(seen.has(activity.id))errors.push(`第 ${n+1} 个关联动作重复`);
-    else if(!validEvidence(evidenceQuote,source))errors.push(`第 ${n+1} 个关联动作缺少来源引证`);
+    else if(!piece)errors.push(`第 ${n+1} 个关联动作缺少来源引证`);
     else if(!activityMatchesEvidence(activity,evidenceQuote))errors.push(`第 ${n+1} 个关联动作无法由引证中的名称或别名核对`);
-    else {seen.add(activity.id);links.push({activityId:activity.id,evidenceQuote});}
+    else {seen.add(activity.id);links.push({activityId:activity.id,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,...(piece.kind==='asr_transcript'?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
   });
   if(errors.length)return {ok:false,errors};
   return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),claims:drafts,activityLinks:links}};
@@ -114,6 +137,6 @@ export function applyKnowledgeCard(state,captureId,card,now=new Date()){
   const knowledge=(state.knowledge||[]).find(k=>k.id===capture.knowledgeId);
   if(!knowledge)throw new Error('找不到对应的知识卡，请刷新后重试。');
   Object.assign(knowledge,{status:'saved',title:clip(card.title,120),text:clip(card.summary,700)||card.claims.map(c=>c.text).join('；'),url:capture.rawUrl,sourceTitle:clip(capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:card.activityLinks.map(x=>x.activityId),claims:card.claims,activityLinks:card.activityLinks,updatedAt:date(now)});
-  Object.assign(capture,{status:'card_created',updatedAt:date(now)});
+  Object.assign(capture,{status:'card_created',cardDraft:null,updatedAt:date(now)});
   return knowledge;
 }

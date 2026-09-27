@@ -4,7 +4,7 @@ export const SCHEMA_VERSION = 1;
 export const STORE_KEY = 'xundong.v1';
 export const uid = () => globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 export function initialState() {
-  return { schemaVersion: SCHEMA_VERSION, profile: { name: '', focus: 'balanced', equipment: [], experience: 'beginner', goalText: '', bodyNotes: '', ageRange:'', sleepHours:null, sittingHours:null, preferredSports:'', skipWarmup: false, updatedAt: null }, assessments:[], abilityEvidence:[], settings:{aiConsent:null, aiDirect:null}, notes: structuredClone(seedNotes), knowledge: structuredClone(seedKnowledge), captures:[], sessions: [], observations: [], draft: null };
+  return { schemaVersion: SCHEMA_VERSION, profile: { name: '', focus: 'balanced', equipment: [], experience: 'beginner', goalText: '', bodyNotes: '', ageRange:'', sleepHours:null, sittingHours:null, preferredSports:'', skipWarmup: false, updatedAt: null }, assessments:[], abilityEvidence:[], settings:{aiConsent:null, aiDirect:null, ingest:null}, notes: structuredClone(seedNotes), knowledge: structuredClone(seedKnowledge), captures:[], sessions: [], observations: [], draft: null };
 }
 export function eligible(activity, request, profile) {
   return activity.selectable !== false && activity.places.includes(request.place)

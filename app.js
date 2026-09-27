@@ -7,7 +7,8 @@ import { directConfig, directConsentId, providerHost, directMessages, callDirect
 import { validateSets, restDefault, isTimed, timeTarget } from './training.js';
 import { safetyBlock, textMentionsLimits } from './safety.js';
 import { abilityEntry, abilityBlock, allowedUses, buildAbilityIntakeInput, validateAbilityIntake, abilityRecords } from './abilities.js';
-import { captureEntry, captureHasEvidence, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, capturePlatforms } from './knowledge.js';
+import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, capturePlatforms } from './knowledge.js';
+import { allowedIngestBase,ingestConfig,supportedAutoCapture,submitIngest,readIngestJob,applyIngestResult } from './ingest.js';
 import { exerciseLogForm,sessionEditForm,assessmentForm,abilityIntakeForm,abilityConfirmForm,activityName } from './experience.js';
 import { applyReplacement } from './domain.js';
 import { pauseActiveTimer, resumeActiveTimer } from './timing.js';
@@ -25,6 +26,7 @@ let page=routes[location.hash.slice(1)]?location.hash.slice(1):'today';
 let request=structuredClone(state.draft?.request||{minutes:20,place:'home',focus:state.profile.focus,readiness:'normal',targetRegions:[]});
 let filters={search:'',category:'all',system:'all',place:'all',personal:'all'},knowledgeFilter='all',toastTimer;
 const aiState={ready:false,busy:false,mode:null,text:'',model:null,provider:'',consentId:null,paired:false,pairingRequired:false,optionsOpen:false,adjustText:''};let pendingLog=null,pendingAbility=null,pendingKnowledge=null;
+const ingestPolling=new Set(),ingestStarting=new Set();
 aiState.text=state.aiPending?.text||'';
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4500);}
 function commit(change){
@@ -136,13 +138,59 @@ function knowledgeDialog(id){
 }
 function captureDialog(id){
   const capture=id?(state.captures||[]).find(c=>c.id===id):null;
-  showModal(capture?'补充分享内容':'收藏一条分享',`<form id="capture-form" data-id="${esc(capture?.id||'')}"><label>分享链接<input name="rawUrl" type="url" inputmode="url" value="${esc(capture?.rawUrl||'')}" placeholder="抖音、小红书、B 站或网页链接"></label><label>作者或来源（可选）<input name="sourceTitle" maxlength="180" value="${esc(capture?.sourceTitle||'')}" placeholder="例如：谭成义、视频标题"></label><label>分享文字 / 文案 / 字幕<textarea name="shareText" maxlength="8000" rows="8" placeholder="粘贴视频文案、字幕或你想留下的原话。只有链接也能先保存，但不会让 AI 猜视频内容。">${esc(capture?.shareText||'')}</textarea></label><label>我为什么想收藏（可选）<textarea name="userNote" maxlength="1000" placeholder="例如：想试试他的髋部训练思路。">${esc(capture?.userNote||'')}</textarea></label><p class="helper left">原始链接和文字会先保存在本机收件箱。只有你提供了来源文字，才会发送给已启用的 AI 整理成草稿。</p><button type="submit" class="primary full">${capture?'保存补充内容':'存入收件箱'} ${icon('bookmark')}</button></form><button class="secondary full" data-action="paste-capture">从剪贴板粘贴</button>`);
+  showModal(capture?'补充分享内容':'收藏一条分享',`<form id="capture-form" data-id="${esc(capture?.id||'')}"><label>分享链接<input name="rawUrl" type="url" inputmode="url" value="${esc(capture?.rawUrl||'')}" placeholder="抖音、小红书、B 站或网页链接" ${capture?'readonly':''}></label><label>作者或来源（可选）<input name="sourceTitle" maxlength="180" value="${esc(capture?.sourceTitle||'')}" placeholder="例如：谭成义"></label><label>分享文字 / 文案 / 字幕（可选）<textarea name="shareText" maxlength="8000" rows="5" placeholder="直接粘贴链接也可以。已启用云端服务的公开抖音视频会尝试自动转成文字。">${esc(capture?.shareText||'')}</textarea></label><label>我为什么想收藏（可选）<textarea name="userNote" maxlength="1000" placeholder="例如：想试试他的髋部训练思路。">${esc(capture?.userNote||'')}</textarea></label><p class="helper left">原始分享会先保存在本机。自动整理只在你配置服务后，对公开抖音视频发送链接并转写；失败也不会丢失收藏。</p><button type="submit" class="primary full">${capture?'保存补充内容':'存入收件箱'} ${icon('bookmark')}</button></form>${capture?'':'<button class="secondary full" data-action="paste-capture">从剪贴板粘贴</button>'}`);
+}
+function ingestSettingsDialog(){
+  const cfg=ingestConfig(state);
+  showModal('自动视频整理',`<p>配置后，收藏公开抖音视频时可自动生成待确认知识卡。链接会发送到你自己的 Cloudflare Worker；Worker 用 TikHub 取得播放信息，再交百炼识别语音并整理观点。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form"><label>Worker 地址<input name="base" type="url" inputmode="url" required value="${esc(cfg?.base||'')}" placeholder="https://xundong-video-ingest.你的账号.workers.dev"></label><label>个人访问码<input name="token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'至少 24 位'}" ${cfg?'':'required'}></label><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向此服务发送分享链接，并用百炼处理公开媒体与逐字稿</label><button class="primary full" type="submit">保存自动整理设置</button></form>${cfg?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">个人访问码只保存在这台设备，导出备份会移除。自动整理目前先支持 3 分钟内的公开抖音视频。</p>`);
+}
+async function startIngest(captureId){
+  const capture=state.captures.find(c=>c.id===captureId),cfg=ingestConfig(state);
+  if(!capture)return;
+  if(!cfg){ingestSettingsDialog();return;}
+  if(!supportedAutoCapture(capture)){toast('自动整理目前先支持公开的抖音视频。');return;}
+  if(ingestStarting.has(captureId)||capture.ingestStatus==='queued')return;
+  ingestStarting.add(captureId);
+  try{
+    const jobId=await submitIngest(capture,cfg);
+    if(commit(s=>{const c=s.captures.find(c=>c.id===captureId);c.ingestJobId=jobId;c.ingestStatus='queued';c.ingestError='';c.updatedAt=new Date().toISOString();const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')k.text='正在读取视频内容并转成文字。';})){
+      render();toast('已保存链接，正在后台读取视频和转写。');
+    }
+  }catch(e){toast(e.message||'自动整理暂时不可用，链接已保存在收件箱。');}
+  finally{ingestStarting.delete(captureId);}
+}
+async function pollIngest(captureId){
+  const c=state.captures.find(x=>x.id===captureId),cfg=ingestConfig(state);
+  if(!c||!cfg||!c.ingestJobId||c.ingestStatus!=='queued'||ingestPolling.has(captureId)||navigator.onLine===false)return;
+  ingestPolling.add(captureId);
+  let terminal=false;
+  try{
+    const result=await readIngestJob(c.ingestJobId,cfg);
+    if(result.status==='queued')return;
+    terminal=true;
+    if(commit(s=>applyIngestResult(s,captureId,result))){
+      render();
+      if(result.status==='complete'){
+        const saved=state.captures.find(c=>c.id===captureId);
+        toast(saved?.cardDraft?'知识卡草稿已准备好，请核对。':'视频已转成文字，可稍后整理知识卡。');
+        if(saved?.cardDraft&&page==='knowledge'&&!$('#sheet').open)reviewIngestDraft(captureId);
+      }else toast(result.message||'暂时无法自动整理，链接仍在收件箱。');
+    }
+  }catch(e){if((terminal||Date.now()-new Date(c.updatedAt||c.capturedAt).getTime()>48*3600000)&&commit(s=>{const item=s.captures.find(x=>x.id===captureId);item.ingestStatus='failed';item.ingestError=terminal?'云端结果无法核对，请重试。':'任务已过期，请重试。';}))render();}
+  finally{ingestPolling.delete(captureId);}
 }
 function knowledgeConfirmDialog(){
   const {captureId,card}=pendingKnowledge;
   const capture=(state.captures||[]).find(c=>c.id===captureId);
   if(!capture)return toast('找不到这条分享，请刷新后重试。');
-  showModal('核对知识卡',`<p class="muted">每条观点都附着你提供的原文。请核对后保存；没有勾选的观点不会进入知识卡。</p><form id="knowledge-confirm-form"><label>标题<input name="title" required maxlength="120" value="${esc(card.title)}"></label><label>摘要（可选）<textarea name="summary" maxlength="700">${esc(card.summary||'')}</textarea></label>${card.claims.map((claim,n)=>`<fieldset class="log-item"><label class="checkbox-line"><input type="checkbox" name="keep_${n}" checked> 保留第 ${n+1} 条</label><label>整理后的观点<textarea name="claim_${n}" required maxlength="500">${esc(claim.text)}</textarea></label><p class="small muted">来源原文：「${esc(claim.evidenceQuote)}」</p></fieldset>`).join('')}<fieldset><legend>关联现有动作（可选）</legend>${card.activityLinks.map((link,n)=>`<label class="checkbox-line"><input type="checkbox" name="linkKeep_${n}" checked> <select name="link_${n}">${activities.map(a=>`<option value="${a.id}" ${a.id===link.activityId?'selected':''}>${esc(a.name)}</option>`).join('')}</select><span class="small muted">原文：「${esc(link.evidenceQuote)}」</span></label>`).join('')||'<p class="small muted">AI 没有找到可由原文核对的现有动作。</p>'}</fieldset><label class="checkbox-line"><input type="checkbox" name="useInPlanning">允许以后推荐时参考这张个人知识卡</label><p class="helper left">这张卡来自你收藏的内容，观点未经专业审核。即使允许参考，也不能绕过当天的安全、器械和时间限制。</p><button class="primary full" type="submit">保存到个人知识库 ${icon('check')}</button></form>`);
+  showModal('核对知识卡',`<p class="muted">每条观点都附有实际取得的文字依据。语音识别可能听错，请核对后保存。</p><form id="knowledge-confirm-form"><label>标题<input name="title" required maxlength="120" value="${esc(card.title)}"></label><label>摘要（可选）<textarea name="summary" maxlength="700">${esc(card.summary||'')}</textarea></label>${card.claims.map((claim,n)=>`<fieldset class="log-item"><label class="checkbox-line"><input type="checkbox" name="keep_${n}" checked> 保留第 ${n+1} 条</label><label>整理后的观点<textarea name="claim_${n}" required maxlength="500">${esc(claim.text)}</textarea></label><p class="small muted">${claim.evidenceKind==='asr_transcript'?'视频语音'+(claim.startMs!=null?` · ${Math.floor(claim.startMs/60000)}:${String(Math.floor(claim.startMs/1000)%60).padStart(2,'0')}`:''):'你提供的文字'}：「${esc(claim.evidenceQuote)}」</p></fieldset>`).join('')}<fieldset><legend>关联现有动作（可选）</legend>${card.activityLinks.map((link,n)=>`<label class="checkbox-line"><input type="checkbox" name="linkKeep_${n}" checked> <select name="link_${n}">${activities.map(a=>`<option value="${a.id}" ${a.id===link.activityId?'selected':''}>${esc(a.name)}</option>`).join('')}</select><span class="small muted">原文：「${esc(link.evidenceQuote)}」</span></label>`).join('')||'<p class="small muted">AI 没有找到可由原文核对的现有动作。</p>'}</fieldset><label class="checkbox-line"><input type="checkbox" name="useInPlanning">允许以后推荐时参考这张个人知识卡</label><p class="helper left">这张卡来自你收藏的内容，观点未经专业审核。即使允许参考，也不能绕过当天的安全、器械和时间限制。</p><button class="primary full" type="submit">保存到个人知识库 ${icon('check')}</button></form>`);
+}
+function reviewIngestDraft(captureId){
+  const capture=state.captures.find(c=>c.id===captureId);
+  if(!capture?.cardDraft)return analyzeCapture(captureId);
+  const checked=validateKnowledgeImport({status:'ok',card:capture.cardDraft},capture);
+  if(!checked.ok){toast('知识卡草稿的来源依据已失效，请重新整理。');return;}
+  pendingKnowledge={captureId,card:checked.card};knowledgeConfirmDialog();
 }
 function analyzeCapture(captureId){
   const capture=(state.captures||[]).find(c=>c.id===captureId);
@@ -275,7 +323,9 @@ document.addEventListener('click',e=>{
   if(el.dataset.abilityArchive){const id=el.dataset.abilityArchive;if(commit(s=>{const a=s.assessments.find(a=>a.id===id);a.status=a.status==='archived'?'active':'archived';}))render();return;}
   if(el.dataset.abilityDelete){showModal('删除这条观察？','<p>观察和只属于它的原话都会删除，不影响训练记录。</p><button class="primary" data-action="confirm-ability-delete" data-id="'+esc(el.dataset.abilityDelete)+'">删除</button>');return;}
   if(el.dataset.analyzeCapture){analyzeCapture(el.dataset.analyzeCapture);return;}
+  if(el.dataset.reviewIngest){reviewIngestDraft(el.dataset.reviewIngest);return;}
   if(el.dataset.editCapture){captureDialog(el.dataset.editCapture);return;}
+  if(el.dataset.autoIngest){startIngest(el.dataset.autoIngest);return;}
   if(el.dataset.personal){filters.personal=el.dataset.personal;render();return;}
   if(el.dataset.nav){navigate(el.dataset.nav);return;}
   if(el.dataset.detail){detail(el.dataset.detail);return;}
@@ -296,6 +346,8 @@ document.addEventListener('click',e=>{
     case 'generate':generateLocal();break;
     case 'generate-smart':aiState.text=$('#ai-text')?.value||'';if(!aiState.text.trim()&&state.aiPending)commit(s=>s.aiPending=null);if(aiState.text.trim()&&(!state.settings?.aiConsent||!aiState.paired)){aiSettings();break;}if(aiState.ready&&state.settings?.aiConsent){if(ensureAI())withBusy(aiPlan,'plan');}else generateLocal();break;
     case 'ai-settings':aiSettings();break;
+    case 'ingest-settings':ingestSettingsDialog();break;
+    case 'clear-ingest':if(commit(s=>s.settings.ingest=null)){$('#sheet').close();render();toast('已清除这台设备的自动整理访问码。');}break;
     case 'disable-ai':if(commit(s=>s.settings.aiConsent=null)){$('#sheet').close();render();toast('已关闭 AI 数据发送。');}break;
     case 'clear-ai-direct':if(commit(s=>{s.settings.aiDirect=null;if(s.settings.aiConsent?.providerId===aiState.consentId)s.settings.aiConsent=null;})){Object.assign(aiState,{ready:false,mode:null,model:null,provider:'',consentId:null,paired:false,pairingRequired:false});$('#sheet').close();probeAI();render();toast('已清除本设备上的 key。');}break;
     case 'assessment':showModal('新增能力观察',assessmentForm());break;
@@ -317,10 +369,11 @@ document.addEventListener('click',e=>{
     case 'capture':captureDialog();break;
     case 'paste-capture':{
       navigator.clipboard?.readText?.().then(text=>{
-        const value=String(text||'').trim(),url=/^https?:\/\//i.test(value)?value:'';
+        const value=String(text||'').trim(),{rawUrl,shareText}=splitSharedText(value);
         const dialog=$('#sheet'),form=dialog.querySelector('#capture-form');if(!form)return;
-        if(url)form.rawUrl.value=url;else form.shareText.value=value;
-        toast(url?'已粘贴链接。':'已粘贴文字。');
+        if(rawUrl)form.rawUrl.value=rawUrl;
+        if(shareText)form.shareText.value=shareText;
+        toast(rawUrl?'已提取分享链接。':'已粘贴文字。');
       }).catch(()=>toast('无法读取剪贴板，请手动粘贴。'));
       break;
     }
@@ -350,6 +403,14 @@ document.addEventListener('submit',async e=>{
       ok=commit(s=>{s.settings.aiDirect={base,key,model,consentId};s.settings.aiConsent={providerId:consentId,provider:providerHost(base),model,confirmedAt:new Date().toISOString()};});
       if(ok){applyDirect();$('#sheet').close();render();toast('本机直连已启用，出门也能用 AI。');return;}
     }
+    if(form.id==='ingest-settings-form'){
+      if(!f.get('consent'))throw new Error('请确认分享链接会发送给此云端服务。');
+      const base=allowedIngestBase(f.get('base')),token=String(f.get('token')||'').trim()||ingestConfig(state)?.token;
+      if(!base)throw new Error('目前请填写 https://…workers.dev 格式的 Worker 地址。');
+      if(!token||token.length<24)throw new Error('个人访问码至少需要 24 位。');
+      ok=commit(s=>s.settings.ingest={base,token,confirmedAt:new Date().toISOString()});
+      if(ok){$('#sheet').close();render();toast('自动视频整理已配置。收藏公开抖音链接时会自动尝试转写。');}return;
+    }
     if(form.id==='assessment-form')ok=commit(s=>s.assessments.push(abilityEntry(Object.fromEntries(f))));
     if(form.id==='ability-intake-form'){const rawText=String(f.get('rawText')||'').trim();if(!rawText)throw new Error('先写一点最近的情况。');$('#sheet').close();abilityIntake({rawText,source:f.get('source'),observedOn:f.get('observedOn')});return;}
     if(form.id==='ability-confirm-form'){const drafts=readAbilityConfirm(f);if(!drafts.length){pendingAbility=null;$('#sheet').close();toast('没有勾选任何条目，什么也没保存。');return;}
@@ -360,20 +421,21 @@ document.addEventListener('submit',async e=>{
       const oldId=form.dataset.id;
       if(oldId){
         const old=(state.captures||[]).find(c=>c.id===oldId);if(!old)throw new Error('找不到这条分享，请刷新后重试。');
-        const draft=captureEntry(input,{...state,captures:state.captures.filter(c=>c.id!==oldId)}),nextCapture={...draft.capture,id:old.id,knowledgeId:old.knowledgeId,capturedAt:old.capturedAt};
-        ok=commit(s=>{const c=s.captures.find(c=>c.id===oldId);Object.assign(c,nextCapture);const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')Object.assign(k,{title:nextCapture.sourceTitle||capturePlatforms[nextCapture.platform]+' 分享',url:nextCapture.rawUrl,sourceTitle:nextCapture.sourceTitle||capturePlatforms[nextCapture.platform],text:nextCapture.shareText?'等待 AI 根据你提供的文字整理。':'已保存链接，待补充文案、字幕或截图中的文字。',updatedAt:new Date().toISOString()});});
+        if(String(input.rawUrl||'').trim()!==old.rawUrl)throw new Error('原始分享链接会保留用于追溯；如需另一条链接，请新建收藏。');
+        const draft=captureEntry(input,{...state,captures:state.captures.filter(c=>c.id!==oldId)}).capture;
+        ok=commit(s=>{const c=s.captures.find(c=>c.id===oldId);if(c.shareText!==draft.shareText)c.shareTextHistory=[...(c.shareTextHistory||[]),{text:c.shareText,changedAt:new Date().toISOString()}];Object.assign(c,{shareText:draft.shareText,userNote:draft.userNote,sourceTitle:draft.sourceTitle,updatedAt:new Date().toISOString()});const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')Object.assign(k,{title:c.resolvedSource?.title||c.sourceTitle||capturePlatforms[c.platform]+' 分享',sourceTitle:c.resolvedSource?.creatorName||c.sourceTitle||capturePlatforms[c.platform],text:c.transcript?.text?'视频已转成文字，等待 AI 整理成知识卡。':c.shareText?'等待 AI 根据你提供的文字整理。':'已保存链接，待补充文案、字幕或截图中的文字。',updatedAt:new Date().toISOString()});});
       }else{
         const created=captureEntry(input,state);ok=commit(s=>{s.captures.push(created.capture);s.knowledge.push(created.knowledge);});
         if(ok)form.dataset.createdCapture=created.capture.id;
       }
-      if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。补充文案、字幕或截图中的文字后再整理。');}return;
+      if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(!oldId&&ingestConfig(state)&&supportedAutoCapture(capture)&&!capture.transcript){startIngest(captureId);}else if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。配置自动视频整理后可一键转写。');}return;
     }
     if(form.id==='knowledge-confirm-form'){
       if(!pendingKnowledge?.card)throw new Error('整理草稿已失效，请重新整理。');
       const capture=(state.captures||[]).find(c=>c.id===pendingKnowledge.captureId);if(!capture)throw new Error('找不到这条来源，请刷新后重试。');
-      const claims=pendingKnowledge.card.claims.flatMap((claim,n)=>f.get(`keep_${n}`)?[{text:String(f.get(`claim_${n}`)||'').trim(),evidenceQuote:claim.evidenceQuote}]:[]);
+      const claims=pendingKnowledge.card.claims.flatMap((claim,n)=>f.get(`keep_${n}`)?[{text:String(f.get(`claim_${n}`)||'').trim(),evidenceId:claim.evidenceId,evidenceQuote:claim.evidenceQuote}]:[]);
       if(!claims.length)throw new Error('至少保留一条有来源依据的观点。');
-      const activityLinks=pendingKnowledge.card.activityLinks.flatMap((link,n)=>f.get(`linkKeep_${n}`)?[{activityId:String(f.get(`link_${n}`)||''),evidenceQuote:link.evidenceQuote}]:[]);
+      const activityLinks=pendingKnowledge.card.activityLinks.flatMap((link,n)=>f.get(`linkKeep_${n}`)?[{activityId:String(f.get(`link_${n}`)||''),evidenceId:link.evidenceId,evidenceQuote:link.evidenceQuote}]:[]);
       const checked=validateKnowledgeImport({status:'ok',card:{title:f.get('title'),summary:f.get('summary'),claims,activityLinks}},capture);
       if(!checked.ok)throw new Error(checked.errors.slice(0,2).join('；'));
       ok=commit(s=>{const k=applyKnowledgeCard(s,pendingKnowledge.captureId,checked.card);k.useInPlanning=Boolean(f.get('useInPlanning'));});
@@ -415,6 +477,7 @@ document.addEventListener('submit',async e=>{
 });
 setInterval(()=>{if($('#elapsed')&&state.draft?.startedAt)$('#elapsed').textContent=elapsedText(state.draft.startedAt);if(rest){if(Date.now()>=rest.endsAt){rest=null;paintRest();}else{const t=$('#rest .rest-time');if(t)t.textContent=fmtSec(restRemain());}}
   if(timer){if(document.hidden){pauseTimer();return;}if(timer.phase==='ready'){if(Date.now()>=timer.readyEndsAt)timerToWork();else paintTimer();}else if(timer.phase==='paused')paintTimer();else if(timer.workEndsAt&&Date.now()>=timer.workEndsAt)stopTimer(true);else paintTimer();}},1000);
+setInterval(()=>{if(ingestConfig(state))for(const c of state.captures||[])if(c.ingestStatus==='queued')pollIngest(c.id);},5000);
 render();
 paintTimer();
 document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseTimer();});
