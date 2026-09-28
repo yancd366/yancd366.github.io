@@ -57,7 +57,7 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     capture.videoAnalysis=result.analysis?.provider==='bailian_video_workflow'?{provider:'bailian_video_workflow',createdAt:now.toISOString()}:null;
     const checked=result.cardDraft?validateKnowledgeImport({status:'ok',card:result.cardDraft},capture):null;
     capture.cardDraft=checked?.ok?checked.card:null;
-    capture.ingestWarning=capture.cardDraft?'':String(result.cardError||'逐字稿已保存，知识卡可在 App 内重新整理。').slice(0,300);
+    capture.ingestWarning=String(result.workflowWarning||(!capture.cardDraft?result.cardError||'逐字稿已保存，知识卡可在 App 内重新整理。':'')).slice(0,500);
     const knowledge=state.knowledge.find(k=>k.id===capture.knowledgeId);
     if(knowledge&&knowledge.status==='inbox'){
       knowledge.title=capture.resolvedSource.title||knowledge.title;
