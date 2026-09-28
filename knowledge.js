@@ -137,6 +137,14 @@ export function validateKnowledgeImport(output,capture){
   return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),claims:drafts,activityLinks:links}};
 }
 
+export function deleteKnowledge(state,knowledgeId){
+  const knowledge=(state.knowledge||[]).find(k=>k.id===knowledgeId);
+  if(!knowledge)throw new Error('找不到这条知识。');
+  state.knowledge=state.knowledge.filter(k=>k.id!==knowledgeId);
+  state.captures=(state.captures||[]).filter(c=>c.knowledgeId!==knowledgeId&&c.id!==knowledge.captureId);
+  return true;
+}
+
 export function applyKnowledgeCard(state,captureId,card,now=new Date()){
   const capture=(state.captures||[]).find(c=>c.id===captureId);
   if(!capture)throw new Error('找不到这条来源，请刷新后重试。');

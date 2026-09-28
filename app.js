@@ -7,7 +7,7 @@ import { directConfig, directConsentId, providerHost, directMessages, callDirect
 import { validateSets, restDefault, isTimed, timeTarget } from './training.js';
 import { safetyBlock, textMentionsLimits } from './safety.js';
 import { abilityEntry, abilityBlock, allowedUses, buildAbilityIntakeInput, validateAbilityIntake, abilityRecords } from './abilities.js';
-import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, capturePlatforms } from './knowledge.js';
+import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, deleteKnowledge, capturePlatforms } from './knowledge.js';
 import { allowedIngestBase,ingestConfig,supportedAutoCapture,preferVideoIngest,submitIngest,readIngestJob,applyIngestResult } from './ingest.js';
 import { exerciseLogForm,sessionEditForm,assessmentForm,abilityIntakeForm,abilityConfirmForm,activityName } from './experience.js';
 import { applyReplacement } from './domain.js';
@@ -338,6 +338,7 @@ document.addEventListener('click',e=>{
   if(el.dataset.category){filters.category=el.dataset.category;render();return;}
   if(el.dataset.system){filters.system=el.dataset.system;render();return;}
   if(el.dataset.knowledgeFilter){knowledgeFilter=el.dataset.knowledgeFilter;render();return;}
+  if(el.dataset.deleteKnowledge){showModal('删除这条知识？','<p>收藏、原文和整理结果都会从这台设备移除，不能撤销。</p><button class="primary" data-action="confirm-knowledge-delete" data-id="'+esc(el.dataset.deleteKnowledge)+'">删除</button>');return;}
   if(el.dataset.editKnowledge){knowledgeDialog(el.dataset.editKnowledge);return;}
   if(el.dataset.saveKnowledge){if(commit(s=>s.knowledge.find(k=>k.id===el.dataset.saveKnowledge).status='saved')){render();toast('已收进个人库；原始来源已保留。');}return;}
   if(el.dataset.preset){if(state.draft){toast('请先完成或撤下当前安排，再开始新的活动。');return;}request={minutes:el.dataset.preset==='mobility'?10:5,place:el.dataset.preset==='office'?'office':'home',focus:el.dataset.preset==='office'?'balanced':el.dataset.preset,readiness:'normal'};generateLocal();window.scrollTo({top:0,behavior:'smooth'});return;}
@@ -356,6 +357,7 @@ document.addEventListener('click',e=>{
     case 'ability-intake':if(ensureAI())showModal('整理身体与能力情况',abilityIntakeForm(pendingAbility||{}));break;
     case 'ability-retry':showModal('整理身体与能力情况',abilityIntakeForm(pendingAbility||{}));break;
     case 'confirm-ability-delete':{const id=el.dataset.id;if(commit(s=>{s.assessments=s.assessments.filter(a=>a.id!==id);const used=new Set(s.assessments.flatMap(a=>a.evidenceIds||[]));s.abilityEvidence=(s.abilityEvidence||[]).filter(e=>used.has(e.id));})){$('#sheet').close();render();toast('已删除这条观察。');}break;}
+    case 'confirm-knowledge-delete':{const id=el.dataset.id;if(commit(s=>deleteKnowledge(s,id))){$('#sheet').close();render();toast('已删除这条知识。');}break;}
     case 'import':importDialog();break;
     case 'manual-log':manualLogDialog();break;
     case 'start':{const reason=checkPlanStart(state.draft,state.profile)||abilityBlock(state.assessments);if(reason){toast(reason);break;}if(commit(s=>{s.draft.startedAt=new Date().toISOString();s.draft.cursor=0;}))render();break;}
