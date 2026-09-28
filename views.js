@@ -104,7 +104,7 @@ export function knowledgeHTML(s,filter) {
     const actions=c?.ingestStatus==='queued'?'<span class="small muted">后台处理中；离开页面后可回来查看</span>'
       :c?.cardDraft?`<button class="text-button orange" data-review-ingest="${esc(c.id)}">核对知识卡 ${icon('arrow')}</button>`
       :c?.ingestStatus==='failed'&&autoPossible?`<button class="text-button orange" data-auto-ingest="${esc(c.id)}">重试自动整理</button>${hasText?`<button class="text-button" data-analyze-capture="${esc(c.id)}">用已有文字整理</button>`:''}`
-      :c?.ingestStatus==='transcribed'?`<button class="text-button orange" data-analyze-capture="${esc(c.id)}">AI 整理 ${icon('arrow')}</button>`
+      :c?.ingestStatus==='transcribed'?`<button class="text-button orange" data-auto-ingest="${esc(c.id)}">重新解析视频 ${icon('arrow')}</button>${hasText?`<button class="text-button" data-analyze-capture="${esc(c.id)}">只用现有文字整理</button>`:''}`
       :autoPossible?`<button class="text-button orange" data-auto-ingest="${esc(c.id)}">自动转成知识卡 ${icon('arrow')}</button>${hasText?`<button class="text-button" data-analyze-capture="${esc(c.id)}">用已有文字整理</button>`:''}`
       :hasText?`<button class="text-button orange" data-analyze-capture="${esc(c.id)}">AI 整理 ${icon('arrow')}</button>`
       :c?`<button class="text-button orange" data-edit-capture="${esc(c.id)}">补充内容 ${icon('edit')}</button>`
