@@ -8,7 +8,7 @@ import { validateSets, restDefault, isTimed, timeTarget } from './training.js';
 import { safetyBlock, textMentionsLimits } from './safety.js';
 import { abilityEntry, abilityBlock, allowedUses, buildAbilityIntakeInput, validateAbilityIntake, abilityRecords } from './abilities.js';
 import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, capturePlatforms } from './knowledge.js';
-import { allowedIngestBase,ingestConfig,supportedAutoCapture,submitIngest,readIngestJob,applyIngestResult } from './ingest.js';
+import { allowedIngestBase,ingestConfig,supportedAutoCapture,preferVideoIngest,submitIngest,readIngestJob,applyIngestResult } from './ingest.js';
 import { exerciseLogForm,sessionEditForm,assessmentForm,abilityIntakeForm,abilityConfirmForm,activityName } from './experience.js';
 import { applyReplacement } from './domain.js';
 import { pauseActiveTimer, resumeActiveTimer } from './timing.js';
@@ -188,7 +188,7 @@ function knowledgeConfirmDialog(){
 }
 function reviewIngestDraft(captureId){
   const capture=state.captures.find(c=>c.id===captureId);
-  if(!capture?.cardDraft)return analyzeCapture(captureId);
+  if(!capture?.cardDraft)return preferVideoIngest(capture)?startIngest(captureId,true):analyzeCapture(captureId);
   const checked=validateKnowledgeImport({status:'ok',card:capture.cardDraft},capture);
   if(!checked.ok){toast('知识卡草稿的来源依据已失效，请重新整理。');return;}
   pendingKnowledge={captureId,card:checked.card};knowledgeConfirmDialog();
@@ -196,6 +196,7 @@ function reviewIngestDraft(captureId){
 function analyzeCapture(captureId){
   const capture=(state.captures||[]).find(c=>c.id===captureId);
   if(!capture)return toast('找不到这条分享，请刷新后重试。');
+  if(preferVideoIngest(capture))return startIngest(captureId,true);
   if(!captureHasEvidence(capture)){captureDialog(captureId);toast('先补充文案、字幕或截图中的文字，才能整理。');return;}
   if(!ensureAI())return;
   withBusy(async()=>{
@@ -429,7 +430,7 @@ document.addEventListener('submit',async e=>{
         const created=captureEntry(input,state);ok=commit(s=>{s.captures.push(created.capture);s.knowledge.push(created.knowledge);});
         if(ok)form.dataset.createdCapture=created.capture.id;
       }
-      if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(!oldId&&ingestConfig(state)&&supportedAutoCapture(capture)&&!capture.transcript){startIngest(captureId);}else if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。配置自动视频整理后可一键转写。');}return;
+      if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(!oldId&&preferVideoIngest(capture)){startIngest(captureId);}else if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。配置自动视频整理后可一键转写。');}return;
     }
     if(form.id==='knowledge-confirm-form'){
       if(!pendingKnowledge?.card)throw new Error('整理草稿已失效，请重新整理。');

@@ -14,6 +14,7 @@ export const ingestConfig=state=>{
 };
 const autoPlatforms=new Set(['douyin','xiaohongshu','bilibili']);
 export const supportedAutoCapture=capture=>autoPlatforms.has(capture?.platform)&&Boolean(capture.rawUrl);
+export const preferVideoIngest=capture=>supportedAutoCapture(capture)&&!capture?.transcript&&!(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.length);
 
 async function api(path,config,{method='GET',body,fetchImpl=fetch,timeoutMs=18000}={}){
   const base=allowedIngestBase(config?.base);
