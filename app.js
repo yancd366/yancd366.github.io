@@ -142,18 +142,18 @@ function captureDialog(id){
 }
 function ingestSettingsDialog(){
   const cfg=ingestConfig(state);
-  showModal('自动视频整理',`<p>配置后，收藏公开抖音视频时可自动生成待确认知识卡。链接会发送到你自己的云端服务；服务用 TikHub 取得播放信息，再交百炼读取口播、画面与字幕。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form"><label>云端服务地址<input name="base" type="url" inputmode="url" required value="${esc(cfg?.base||'')}" placeholder="https://…workers.dev 或 https://….fcapp.run"></label><label>个人访问码<input name="token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'至少 24 位'}" ${cfg?'':'required'}></label><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向此服务发送分享链接，并用百炼处理公开媒体内容</label><button class="primary full" type="submit">保存自动整理设置</button></form>${cfg?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">个人访问码只保存在这台设备，导出备份会移除。自动整理目前先支持 15 分钟内的公开抖音视频。</p>`);
+  showModal('自动视频整理',`<p>配置后，收藏公开的抖音、小红书或 B 站视频时可自动生成待确认知识卡。链接会发送到你自己的云端服务；服务用 TikHub 取得播放信息，再交百炼读取口播、画面与字幕。小红书图文笔记只整理正文。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form"><label>云端服务地址<input name="base" type="url" inputmode="url" required value="${esc(cfg?.base||'')}" placeholder="https://…workers.dev 或 https://….fcapp.run"></label><label>个人访问码<input name="token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'至少 24 位'}" ${cfg?'':'required'}></label><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向此服务发送分享链接，并用百炼处理公开媒体内容</label><button class="primary full" type="submit">保存自动整理设置</button></form>${cfg?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">个人访问码只保存在这台设备，导出备份会移除。自动整理支持 15 分钟内的公开抖音、小红书和 B 站视频。</p>`);
 }
 async function startIngest(captureId,force=false){
   const capture=state.captures.find(c=>c.id===captureId),cfg=ingestConfig(state);
   if(!capture)return;
   if(!cfg){ingestSettingsDialog();return;}
-  if(!supportedAutoCapture(capture)){toast('自动整理目前先支持公开的抖音视频。');return;}
+  if(!supportedAutoCapture(capture)){toast('自动整理目前支持公开的抖音、小红书和 B 站视频。');return;}
   if(ingestStarting.has(captureId)||capture.ingestStatus==='queued')return;
   ingestStarting.add(captureId);
   try{
     const jobId=await submitIngest(capture,cfg,{force});
-    if(commit(s=>{const c=s.captures.find(c=>c.id===captureId);c.ingestJobId=jobId;c.ingestStatus='queued';c.ingestError='';c.updatedAt=new Date().toISOString();const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')k.text='正在读取视频中的口播、画面与字幕。';})){
+    if(commit(s=>{const c=s.captures.find(c=>c.id===captureId);c.ingestJobId=jobId;c.ingestStatus='queued';c.ingestError='';c.ingestWarning='';c.updatedAt=new Date().toISOString();const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')k.text='正在读取视频中的口播、画面与字幕。';})){
       render();toast('已保存链接，正在后台解析视频内容。');
     }
   }catch(e){toast(e.message||'自动整理暂时不可用，链接已保存在收件箱。');}
