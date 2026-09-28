@@ -25,9 +25,9 @@ async function api(path,config,{method='GET',body,fetchImpl=fetch,timeoutMs=1800
   return data;
 }
 
-export async function submitIngest(capture,config,options){
+export async function submitIngest(capture,config,{force=false,...options}={}){
   if(!supportedAutoCapture(capture))throw new Error('目前自动整理先支持公开的抖音视频链接。');
-  const data=await api('/v1/ingest',config,{...options,method:'POST',body:{url:capture.rawUrl}});
+  const data=await api('/v1/ingest',config,{...options,method:'POST',body:{url:capture.rawUrl,force:Boolean(force)}});
   if(data.status!=='accepted'||!/^[a-f0-9-]{36}$/i.test(data.jobId||''))throw new Error('云端没有返回有效的任务编号。');
   return data.jobId;
 }
