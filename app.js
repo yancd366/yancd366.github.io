@@ -142,7 +142,7 @@ function captureDialog(id){
 }
 function ingestSettingsDialog(){
   const cfg=ingestConfig(state);
-  showModal('自动视频整理',`<p>配置后，收藏公开抖音视频时可自动生成待确认知识卡。链接会发送到你自己的 Cloudflare Worker；Worker 用 TikHub 取得播放信息，再交百炼识别语音并整理观点。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form"><label>Worker 地址<input name="base" type="url" inputmode="url" required value="${esc(cfg?.base||'')}" placeholder="https://xundong-video-ingest.你的账号.workers.dev"></label><label>个人访问码<input name="token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'至少 24 位'}" ${cfg?'':'required'}></label><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向此服务发送分享链接，并用百炼处理公开媒体与逐字稿</label><button class="primary full" type="submit">保存自动整理设置</button></form>${cfg?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">个人访问码只保存在这台设备，导出备份会移除。自动整理目前先支持 3 分钟内的公开抖音视频。</p>`);
+  showModal('自动视频整理',`<p>配置后，收藏公开抖音视频时可自动生成待确认知识卡。链接会发送到你自己的云端服务；服务用 TikHub 取得播放信息，再交百炼读取口播、画面与字幕。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form"><label>云端服务地址<input name="base" type="url" inputmode="url" required value="${esc(cfg?.base||'')}" placeholder="https://…workers.dev 或 https://….fcapp.run"></label><label>个人访问码<input name="token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'至少 24 位'}" ${cfg?'':'required'}></label><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向此服务发送分享链接，并用百炼处理公开媒体内容</label><button class="primary full" type="submit">保存自动整理设置</button></form>${cfg?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">个人访问码只保存在这台设备，导出备份会移除。自动整理目前先支持 15 分钟内的公开抖音视频。</p>`);
 }
 async function startIngest(captureId){
   const capture=state.captures.find(c=>c.id===captureId),cfg=ingestConfig(state);
@@ -153,8 +153,8 @@ async function startIngest(captureId){
   ingestStarting.add(captureId);
   try{
     const jobId=await submitIngest(capture,cfg);
-    if(commit(s=>{const c=s.captures.find(c=>c.id===captureId);c.ingestJobId=jobId;c.ingestStatus='queued';c.ingestError='';c.updatedAt=new Date().toISOString();const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')k.text='正在读取视频内容并转成文字。';})){
-      render();toast('已保存链接，正在后台读取视频和转写。');
+    if(commit(s=>{const c=s.captures.find(c=>c.id===captureId);c.ingestJobId=jobId;c.ingestStatus='queued';c.ingestError='';c.updatedAt=new Date().toISOString();const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')k.text='正在读取视频中的口播、画面与字幕。';})){
+      render();toast('已保存链接，正在后台解析视频内容。');
     }
   }catch(e){toast(e.message||'自动整理暂时不可用，链接已保存在收件箱。');}
   finally{ingestStarting.delete(captureId);}
@@ -172,7 +172,7 @@ async function pollIngest(captureId){
       render();
       if(result.status==='complete'){
         const saved=state.captures.find(c=>c.id===captureId);
-        toast(saved?.cardDraft?'知识卡草稿已准备好，请核对。':'视频已转成文字，可稍后整理知识卡。');
+        toast(saved?.cardDraft?'知识卡草稿已准备好，请核对。':'视频已解析，可稍后整理知识卡。');
         if(saved?.cardDraft&&page==='knowledge'&&!$('#sheet').open)reviewIngestDraft(captureId);
       }else toast(result.message||'暂时无法自动整理，链接仍在收件箱。');
     }
@@ -183,7 +183,8 @@ function knowledgeConfirmDialog(){
   const {captureId,card}=pendingKnowledge;
   const capture=(state.captures||[]).find(c=>c.id===captureId);
   if(!capture)return toast('找不到这条分享，请刷新后重试。');
-  showModal('核对知识卡',`<p class="muted">每条观点都附有实际取得的文字依据。语音识别可能听错，请核对后保存。</p><form id="knowledge-confirm-form"><label>标题<input name="title" required maxlength="120" value="${esc(card.title)}"></label><label>摘要（可选）<textarea name="summary" maxlength="700">${esc(card.summary||'')}</textarea></label>${card.claims.map((claim,n)=>`<fieldset class="log-item"><label class="checkbox-line"><input type="checkbox" name="keep_${n}" checked> 保留第 ${n+1} 条</label><label>整理后的观点<textarea name="claim_${n}" required maxlength="500">${esc(claim.text)}</textarea></label><p class="small muted">${claim.evidenceKind==='asr_transcript'?'视频语音'+(claim.startMs!=null?` · ${Math.floor(claim.startMs/60000)}:${String(Math.floor(claim.startMs/1000)%60).padStart(2,'0')}`:''):'你提供的文字'}：「${esc(claim.evidenceQuote)}」</p></fieldset>`).join('')}<fieldset><legend>关联现有动作（可选）</legend>${card.activityLinks.map((link,n)=>`<label class="checkbox-line"><input type="checkbox" name="linkKeep_${n}" checked> <select name="link_${n}">${activities.map(a=>`<option value="${a.id}" ${a.id===link.activityId?'selected':''}>${esc(a.name)}</option>`).join('')}</select><span class="small muted">原文：「${esc(link.evidenceQuote)}」</span></label>`).join('')||'<p class="small muted">AI 没有找到可由原文核对的现有动作。</p>'}</fieldset><label class="checkbox-line"><input type="checkbox" name="useInPlanning">允许以后推荐时参考这张个人知识卡</label><p class="helper left">这张卡来自你收藏的内容，观点未经专业审核。即使允许参考，也不能绕过当天的安全、器械和时间限制。</p><button class="primary full" type="submit">保存到个人知识库 ${icon('check')}</button></form>`);
+  const evidenceLabel=claim=>claim.evidenceKind==='asr_transcript'?'视频语音':claim.evidenceKind==='frame_ocr'?'画面字幕':claim.evidenceKind==='keyframe_description'?'画面解析':'你提供的文字';
+  showModal('核对知识卡',`<p class="muted">每条观点都附有视频语音、画面或字幕依据。AI 识别可能有误，请回看原视频后保存。</p><form id="knowledge-confirm-form"><label>标题<input name="title" required maxlength="120" value="${esc(card.title)}"></label><label>摘要（可选）<textarea name="summary" maxlength="700">${esc(card.summary||'')}</textarea></label>${card.claims.map((claim,n)=>`<fieldset class="log-item"><label class="checkbox-line"><input type="checkbox" name="keep_${n}" checked> 保留第 ${n+1} 条</label><label>整理后的观点<textarea name="claim_${n}" required maxlength="500">${esc(claim.text)}</textarea></label><p class="small muted">${evidenceLabel(claim)}${claim.startMs!=null?` · ${Math.floor(claim.startMs/60000)}:${String(Math.floor(claim.startMs/1000)%60).padStart(2,'0')}`:''}：「${esc(claim.evidenceQuote)}」</p></fieldset>`).join('')}<fieldset><legend>关联现有动作（可选）</legend>${card.activityLinks.map((link,n)=>`<label class="checkbox-line"><input type="checkbox" name="linkKeep_${n}" checked> <select name="link_${n}">${activities.map(a=>`<option value="${a.id}" ${a.id===link.activityId?'selected':''}>${esc(a.name)}</option>`).join('')}</select><span class="small muted">原文：「${esc(link.evidenceQuote)}」</span></label>`).join('')||'<p class="small muted">AI 没有找到可由原文核对的现有动作。</p>'}</fieldset><label class="checkbox-line"><input type="checkbox" name="useInPlanning">允许以后推荐时参考这张个人知识卡</label><p class="helper left">这张卡来自你收藏的内容，观点未经专业审核。即使允许参考，也不能绕过当天的安全、器械和时间限制。</p><button class="primary full" type="submit">保存到个人知识库 ${icon('check')}</button></form>`);
 }
 function reviewIngestDraft(captureId){
   const capture=state.captures.find(c=>c.id===captureId);
@@ -406,7 +407,7 @@ document.addEventListener('submit',async e=>{
     if(form.id==='ingest-settings-form'){
       if(!f.get('consent'))throw new Error('请确认分享链接会发送给此云端服务。');
       const base=allowedIngestBase(f.get('base')),token=String(f.get('token')||'').trim()||ingestConfig(state)?.token;
-      if(!base)throw new Error('目前请填写 https://…workers.dev 格式的 Worker 地址。');
+      if(!base)throw new Error('请填写 https://…workers.dev 或 https://….fcapp.run 格式的云端服务地址。');
       if(!token||token.length<24)throw new Error('个人访问码至少需要 24 位。');
       ok=commit(s=>s.settings.ingest={base,token,confirmedAt:new Date().toISOString()});
       if(ok){$('#sheet').close();render();toast('自动视频整理已配置。收藏公开抖音链接时会自动尝试转写。');}return;

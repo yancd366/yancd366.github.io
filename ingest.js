@@ -4,7 +4,8 @@ import { validateKnowledgeImport } from './knowledge.js';
 export const allowedIngestBase=value=>{
   try{
     const u=new URL(String(value||'').trim());
-    return u.protocol==='https:'&&u.hostname.endsWith('.workers.dev')&&!u.username&&!u.password&&!u.port&&u.pathname==='/'?u.origin:'';
+    const host=u.hostname.toLowerCase();
+    return u.protocol==='https:'&&(host.endsWith('.workers.dev')||host.endsWith('.fcapp.run'))&&!u.username&&!u.password&&!u.port&&u.pathname==='/'?u.origin:'';
   }catch{return '';}
 };
 export const ingestConfig=state=>{
@@ -46,10 +47,14 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     const knowledge=state.knowledge.find(k=>k.id===capture.knowledgeId);
     if(knowledge&&knowledge.status==='inbox')knowledge.text='暂时无法自动整理这条视频；原始链接已保留。';
   }else if(result.status==='complete'){
-    if(!result.transcript||typeof result.transcript.text!=='string'||!result.transcript.text.trim())throw new Error('云端没有返回可核对的逐字稿。');
+    const hasTranscript=Boolean(result.transcript&&typeof result.transcript.text==='string'&&result.transcript.text.trim());
+    const videoEvidence=Array.isArray(result.videoEvidence)?result.videoEvidence.slice(0,80).map((item,n)=>({id:`vision:${n}`,kind:['keyframe_description','frame_ocr'].includes(String(item?.kind||''))?String(item.kind):'',text:String(item?.text||'').trim().slice(0,1000),startMs:Number(item?.startMs),endMs:Number(item?.endMs)})).filter(item=>item.kind&&item.text&&Number.isFinite(item.startMs)&&item.startMs>=0&&Number.isFinite(item.endMs)&&item.endMs>=item.startMs):[];
+    if(!hasTranscript&&!videoEvidence.length)throw new Error('云端没有返回可核对的语音或画面依据。');
     capture.ingestStatus='transcribed';capture.ingestError='';
     capture.resolvedSource={provider:String(result.source?.provider||'').slice(0,40),platform:String(result.source?.platform||'').slice(0,40),contentId:String(result.source?.contentId||'').slice(0,100),title:String(result.source?.title||'').slice(0,180),creatorName:String(result.source?.creatorName||'').slice(0,120),description:String(result.source?.description||'').slice(0,2000),durationMs:Number(result.source?.durationMs)||null,retrievedAt:result.source?.retrievedAt||now.toISOString()};
-    capture.transcript={source:'asr',model:String(result.transcript.model||'').slice(0,100),text:result.transcript.text.trim().slice(0,30000),segments:Array.isArray(result.transcript.segments)?result.transcript.segments.slice(0,150).map(s=>({startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs),text:String(s.text||'').slice(0,1000)})):[],createdAt:result.transcript.createdAt||now.toISOString()};
+    if(hasTranscript)capture.transcript={source:'asr',model:String(result.transcript.model||'').slice(0,100),text:result.transcript.text.trim().slice(0,30000),segments:Array.isArray(result.transcript.segments)?result.transcript.segments.slice(0,150).map(s=>({startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs),text:String(s.text||'').slice(0,1000)})):[],createdAt:result.transcript.createdAt||now.toISOString()};
+    if(videoEvidence.length)capture.videoEvidence=videoEvidence;
+    capture.videoAnalysis=result.analysis?.provider==='bailian_video_workflow'?{provider:'bailian_video_workflow',createdAt:now.toISOString()}:null;
     const checked=result.cardDraft?validateKnowledgeImport({status:'ok',card:result.cardDraft},capture):null;
     capture.cardDraft=checked?.ok?checked.card:null;
     capture.ingestWarning=capture.cardDraft?'':String(result.cardError||'逐字稿已保存，知识卡可在 App 内重新整理。').slice(0,300);
@@ -57,7 +62,7 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     if(knowledge&&knowledge.status==='inbox'){
       knowledge.title=capture.resolvedSource.title||knowledge.title;
       knowledge.sourceTitle=capture.resolvedSource.creatorName||knowledge.sourceTitle;
-      knowledge.text=capture.cardDraft?'视频已转成文字，知识卡草稿等待你核对。':'视频已转成文字，可再次尝试整理知识卡。';
+      knowledge.text=capture.cardDraft?'视频已解析，知识卡草稿等待你核对。':hasTranscript?'视频已转成文字，可再次尝试整理知识卡。':'视频画面已解析，可再次尝试整理知识卡。';
       knowledge.updatedAt=now.toISOString();
     }
   }

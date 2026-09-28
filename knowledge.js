@@ -62,7 +62,7 @@ export function captureEntry(input,state,now=new Date()){
   return {capture,knowledge};
 }
 
-export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.transcript?.text,1));
+export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.transcript?.text,1)||(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.some(x=>clip(x?.text,1))));
 export const captureForKnowledge=(state,id)=> (state.captures||[]).find(c=>c.knowledgeId===id)||null;
 
 export function captureEvidence(capture){
@@ -74,6 +74,12 @@ export function captureEvidence(capture){
     if(segments.length)segments.slice(0,150).forEach((s,n)=>pieces.push({id:`asr:${n}`,kind:'asr_transcript',text:clip(s.text,1000),startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs)}));
     else pieces.push({id:'asr:full',kind:'asr_transcript',text:clip(transcript.text,30000),startMs:null,endMs:null});
   }
+  const visualKinds=new Set(['keyframe_description','frame_ocr']);
+  if(Array.isArray(capture?.videoEvidence))capture.videoEvidence.slice(0,80).forEach((item,n)=>{
+    const kind=String(item?.kind||'');
+    const text=clip(item?.text,1000),startMs=Number(item?.startMs),endMs=Number(item?.endMs);
+    if(visualKinds.has(kind)&&text&&Number.isFinite(startMs)&&startMs>=0&&Number.isFinite(endMs)&&endMs>=startMs)pieces.push({id:`vision:${n}`,kind,text,startMs:Math.round(startMs),endMs:Math.round(endMs)});
+  });
   return pieces;
 }
 
@@ -96,7 +102,7 @@ const activityMatchesEvidence=(activity,quote)=>{
 
 export function validateKnowledgeImport(output,capture){
   const pieces=captureEvidence(capture),errors=[];
-  if(!pieces.length)return {ok:false,errors:['没有可供核对的来源文字或逐字稿。']};
+  if(!pieces.length)return {ok:false,errors:['没有可供核对的来源文字、逐字稿或画面依据。']};
   if(!output||!['ok','clarify'].includes(output.status))return {ok:false,errors:['status 应为 ok / clarify']};
   if(output.status==='clarify')return output.question?.trim?.()?{ok:true,status:'clarify',question:clip(output.question,220)}:{ok:false,errors:['clarify 需要 question']};
   const card=output.card;
@@ -111,7 +117,7 @@ export function validateKnowledgeImport(output,capture){
     if(!text)errors.push(`${at}需要 text`);
     if(!piece)errors.push(`${at} evidenceQuote 必须逐字摘自对应来源文字`);
     if(forbidden.test(text))errors.push(`${at}不能写诊断、治疗或矫正承诺`);
-    if(text&&piece&&!forbidden.test(text))drafts.push({text,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,...(piece.kind==='asr_transcript'?{startMs:piece.startMs,endMs:piece.endMs}:{})});
+    if(text&&piece&&!forbidden.test(text))drafts.push({text,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
   });
   const links=[];
   const byId=new Map(activities.map(a=>[a.id,a]));
@@ -125,7 +131,7 @@ export function validateKnowledgeImport(output,capture){
     else if(seen.has(activity.id))errors.push(`第 ${n+1} 个关联动作重复`);
     else if(!piece)errors.push(`第 ${n+1} 个关联动作缺少来源引证`);
     else if(!activityMatchesEvidence(activity,evidenceQuote))errors.push(`第 ${n+1} 个关联动作无法由引证中的名称或别名核对`);
-    else {seen.add(activity.id);links.push({activityId:activity.id,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,...(piece.kind==='asr_transcript'?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
+    else {seen.add(activity.id);links.push({activityId:activity.id,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
   });
   if(errors.length)return {ok:false,errors};
   return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),claims:drafts,activityLinks:links}};
