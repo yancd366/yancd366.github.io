@@ -95,7 +95,7 @@ export function knowledgeHTML(s,filter) {
   const rows=s.knowledge.filter(k=>filter==='all'||k.status===filter);
   const captureFor=k=>(s.captures||[]).find(c=>c.knowledgeId===k.id);
   const time=ms=>ms==null?'':`${Math.floor(ms/60000)}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}`;
-  const evidenceLabel=x=>x.evidenceKind==='asr_transcript'?'视频语音':x.evidenceKind==='frame_ocr'?'画面字幕':x.evidenceKind==='keyframe_description'?'画面解析':'原文';
+  const evidenceLabel=x=>x.evidenceSource==='workflow_model'?'AI 画面描述（待核对）':x.evidenceKind==='asr_transcript'?'视频语音':x.evidenceKind==='frame_ocr'?'画面字幕':x.evidenceKind==='keyframe_description'?'画面解析':'原文';
   const cards=rows.map(k=>{
     const c=captureFor(k),claims=Array.isArray(k.claims)?k.claims:[];
     const hasText=Boolean(c?.shareText||c?.transcript?.text||(Array.isArray(c?.videoEvidence)&&c.videoEvidence.length));
