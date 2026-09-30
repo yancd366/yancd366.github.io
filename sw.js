@@ -1,5 +1,5 @@
-const CACHE='xundong-shell-v20';
-const ASSETS=['/','/styles.css','/app.js','/views.js','/ui.js','/domain.js','/catalog.js','/ai.js','/ai-direct.js','/skill-prompts.js','/training.js','/timing.js','/abilities.js','/knowledge.js','/ingest.js','/safety.js','/storage.js','/experience.js','/icon.svg','/manifest.webmanifest','/apple-touch-icon.png','/icon-192.png','/icon-512.png',...['entry','core','gym','bodyweight','convict','isometric','boxing','mobility'].map(x=>`/library/${x}.js`)];
+const CACHE='xundong-shell-v21';
+const ASSETS=['/','/styles.css','/app.js','/views.js','/ui.js','/domain.js','/catalog.js','/ai.js','/ai-direct.js','/skill-prompts.js','/training.js','/timing.js','/abilities.js','/knowledge.js','/creators.js','/ingest.js','/safety.js','/storage.js','/experience.js','/icon.svg','/manifest.webmanifest','/apple-touch-icon.png','/icon-192.png','/icon-512.png',...['entry','core','gym','bodyweight','convict','isometric','boxing','mobility'].map(x=>`/library/${x}.js`)];
 function safeResponse(path,response){
   if(!response.ok||response.redirected)return false;
   const mime=response.headers.get('content-type')||'';

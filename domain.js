@@ -1,10 +1,11 @@
 import { activities, relations, seedNotes, seedKnowledge, goals, bodyRegions, regionLabel } from './catalog.js';
 import { safetyContext, safetyBlock, canonicalMovement, eligibleRisk } from './safety.js';
+import { activeAssessments } from './abilities.js';
 export const SCHEMA_VERSION = 1;
 export const STORE_KEY = 'xundong.v1';
 export const uid = () => globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 export function initialState() {
-  return { schemaVersion: SCHEMA_VERSION, profile: { name: '', focus: 'balanced', equipment: [], experience: 'beginner', goalText: '', bodyNotes: '', ageRange:'', sleepHours:null, sittingHours:null, preferredSports:'', skipWarmup: false, updatedAt: null }, assessments:[], abilityEvidence:[], settings:{aiConsent:null, aiDirect:null, ingest:null}, notes: structuredClone(seedNotes), knowledge: structuredClone(seedKnowledge), captures:[], sessions: [], observations: [], draft: null };
+  return { schemaVersion: SCHEMA_VERSION, profile: { name: '', focus: 'balanced', equipment: [], experience: 'beginner', goalText: '', bodyNotes: '', ageRange:'', sleepHours:null, sittingHours:null, preferredSports:'', skipWarmup: false, updatedAt: null }, assessments:[], abilityEvidence:[], settings:{aiConsent:null, aiDirect:null, ingest:null, aiOrganizeModel:null}, notes: structuredClone(seedNotes), knowledge: structuredClone(seedKnowledge), captures:[], creatorProfiles:[], sessions: [], observations: [], draft: null };
 }
 export function eligible(activity, request, profile) {
   return activity.selectable !== false && activity.places.includes(request.place)
@@ -21,6 +22,31 @@ const mainRank = a => a.category === 'coordination' ? 0
   : a.category === 'cardio' ? 3
   : (a.system === 'isometric' || a.primaryRegions.includes('core')) ? 2 : 1;
 export const orderRank = a => [PHASE_RANK[a.phase] ?? 1, mainRank(a)];
+// 能力观察用 abilityAreas 词表，动作用 bodyRegions；温和参考按此把观察部位对应到动作部位。
+const ABILITY_AREA_TO_REGION = { neck:['neck'], shoulder:['shoulders'], elbow_wrist:['arms','forearms_wrists'],
+  upper_back:['back'], lower_back:['back','core'], core:['core'], hip:['hips_legs'], knee:['hips_legs','calves_ankles'],
+  ankle_foot:['calves_ankles'], whole_body:[] };
+// 温和参考：只用用户确认为 gentle_preference 的有效观察，以小权重微调打分（远小于部位覆盖的 ±20）。
+// 返回 delta 与命中的 hints（供计划说明点名）；方向保守：
+//  - 受限部位：温和下调该部位的力量 / 高冲击动作（活动度动作 primaryRegions 为空、不带部位，不受影响）；
+//  - 全身疲劳 / 恢复差：抬高恢复与活动度、下调高冲击；
+//  - 顺畅 / 左右不一致 / 说不准：都不调分（不变相加练、不强行建模左右）。
+export function abilityWeight(activity, assessments = [], now = new Date()) {
+  const active = activeAssessments(assessments, now).filter(a => a.recommendationUse === 'gentle_preference');
+  let delta = 0; const hints = [];
+  for (const a of active) {
+    const regions = new Set((a.bodyAreas || []).flatMap(area => ABILITY_AREA_TO_REGION[area] || []));
+    let d = 0;
+    if (a.signal === 'limited' && activity.primaryRegions.some(r => regions.has(r))) {
+      if (activity.category === 'strength' || activity.impact !== 'low') d = -4;
+    } else if (a.signal === 'fatigued' && (a.bodyAreas?.includes('whole_body') || !a.bodyAreas?.length)) {
+      if (activity.category === 'recovery' || activity.category === 'mobility') d = 3;
+      else if (activity.impact !== 'low') d = -3;
+    }
+    if (d !== 0) { delta += d; hints.push({ id: a.id, note: a.note, effect: d > 0 ? 'preferred' : 'eased' }); }
+  }
+  return { delta: Math.max(-6, Math.min(6, delta)), hints };
+}
 // AI plans assume a gym has the usual equipment; profile equipment describes what is at home.
 // An explicit request.equipment (e.g. "今天只有哑铃") overrides both.
 export const GYM_EQUIPMENT = ['mat','band','dumbbell','kettlebell','pullup_bar','jump_rope','bench','barbell','rack','smith','cable','machine','dip_bars'];
@@ -34,7 +60,7 @@ export function aiEligible(activity, request, profile) {
   if(safetyBlock(profile,request))return false;
   return eligible(activity, { place: request.place, equipment:availableEquipment(profile,request), focus: 'balanced', readiness: request.readiness === 'normal' ? 'normal' : 'tired' }, profile);
 }
-export function createPlan(request, profile, sessions = [], now = new Date()) {
+export function createPlan(request, profile, sessions = [], now = new Date(), assessments = []) {
   const safety=safetyBlock(profile,request);if(safety)return {blocked:true,reason:safety};
   if (request.readiness === 'discomfort') return { blocked: true, reason: '先记录今天哪里不舒服，再决定是否适合训练。本版不根据症状自动开训练方案。' };
   if (profile.bodyNotes?.trim()) return { blocked: true, reason: '身体档案中有需要留意的情况。首版不能解析这些限制，请先明确适合的活动范围。' };
@@ -46,7 +72,7 @@ export function createPlan(request, profile, sessions = [], now = new Date()) {
   const recent = new Set(sessions.filter(s => new Date(s.endedAt) <= now && now - new Date(s.endedAt) < 2 * 86400000).flatMap(s => s.items.filter(i => i.status === 'completed').map(i => i.activityId)));
   const pool = activities.filter(a => eligible(a, normalizedRequest, profile) && (request.focus !== 'strength' || a.category === 'strength'));
   if (request.focus === 'strength' && !pool.length) return { blocked:true, reason:`当前场地和器械下，动作库暂时没有匹配${regionLabel(wanted)}的力量候选。可以调整部位或器械，或先浏览动作库；不会用其他部位的动作代替。` };
-  const scored = pool.map((a,index) => ({ a, score: (a.category === request.focus ? 12 : 0) + (request.focus === 'balanced' && ['strength','mobility','cardio'].includes(a.category) ? 4 : 0) + (request.readiness === 'tired' && ['recovery','mobility'].includes(a.category) ? 6 : 0) - (recent.has(a.id) ? 8 : 0) - (profile.experience === 'regular' ? 0 : 3 * ((a.tier ?? 1) - 1)) - index / 100 })).sort((a,b) => b.score-a.score);
+  const scored = pool.map((a,index) => { const aw = abilityWeight(a, assessments, now); return { a, abilityHints: aw.hints, score: (a.category === request.focus ? 12 : 0) + (request.focus === 'balanced' && ['strength','mobility','cardio'].includes(a.category) ? 4 : 0) + (request.readiness === 'tired' && ['recovery','mobility'].includes(a.category) ? 6 : 0) - (recent.has(a.id) ? 8 : 0) - (profile.experience === 'regular' ? 0 : 3 * ((a.tier ?? 1) - 1)) - index / 100 + aw.delta }; }).sort((a,b) => b.score-a.score);
   const toItem = a => ({ id: uid(), activityId: a.id, activitySnapshot: structuredClone(a), plannedMinutes: a.minutes, status: 'pending', actualMinutes: null, feedback: '', actualSets: null, actualReps: null, actualLoadKg: null });
   // 热身 / 放松从放宽资格的池里选(不受力量的部位过滤限制),不进入 covered 区域统计。
   const prepPool = phase => activities.filter(a => a.phase === phase && eligible(a, { ...normalizedRequest, focus: 'balanced', targetRegions: [] }, profile))
@@ -55,6 +81,7 @@ export function createPlan(request, profile, sessions = [], now = new Date()) {
   const items = [];
   const maxItems = budget <= 10 ? 3 : 6;
   const covered = new Set();
+  const abilityHintMap = new Map();
   // 除非用户选择「直接开练」,给正式训练前加 1 个热身(mobility 类不需要休息,时间从预算里扣)。
   if (budget > 10 && !profile.skipWarmup && ['strength','balanced','cardio','coordination'].includes(request.focus)) {
     const warmup = prepPool('warmup').find(a => a.minutes <= left);
@@ -63,13 +90,14 @@ export function createPlan(request, profile, sessions = [], now = new Date()) {
   let mainCount = 0;
   while (scored.length && mainCount < maxItems) {
     if (wanted.length) scored.sort((x,y)=>(y.score+20*y.a.primaryRegions.filter(id=>wanted.includes(id)&&!covered.has(id)).length)-(x.score+20*x.a.primaryRegions.filter(id=>wanted.includes(id)&&!covered.has(id)).length));
-    const { a } = scored.shift();
+    const picked = scored.shift(); const a = picked.a;
     if(items.some(i=>canonicalMovement(i.activitySnapshot)===canonicalMovement(a)||(a.system==='convict'&&i.activitySnapshot.familyId===a.familyId)))continue;
     if (a.minutes > left) continue;
     if (request.focus === 'balanced' && items.filter(i => activities.find(x => x.id === i.activityId).category === a.category).length >= 2) continue;
     items.push(toItem(a));
     left -= a.minutes; mainCount++;
     a.primaryRegions.forEach(id=>covered.add(id));
+    picked.abilityHints.forEach(h => abilityHintMap.set(h.id, h));
   }
   // 较长的安排收尾加 1 个放松(拉伸/呼吸);「直接开练」同样跳过。
   if (budget >= 25 && !profile.skipWarmup) {
@@ -83,9 +111,11 @@ export function createPlan(request, profile, sessions = [], now = new Date()) {
   // Rest/setup is explicitly reserved; never stretch a short sample into a long prescription.
   const allocated = items.reduce((sum,i) => sum+i.plannedMinutes,0);
   const reserve = Math.min(left, Math.max(0, items.length-1));
+  const abilityNotes = [...abilityHintMap.values()].map(h => ({ note: h.note, effect: h.effect }));
+  const abilityLine = abilityNotes.length ? `已参考你的能力记录（${abilityNotes.map(n => n.note.slice(0, 16)).join('；')}），温和调整了相关动作。` : '';
   return { id: uid(), createdAt: now.toISOString(), startedAt: null, safetyContext:safetyContext(profile,normalizedRequest), request: structuredClone(normalizedRequest), items, plannedMinutes: allocated, transitionMinutes: reserve, unallocatedMinutes: left-reserve,
     regionCoverage: (normalizedRequest.targetRegions.length?wanted:[...new Set([...wanted,...covered])]).filter(()=>request.focus==='strength').map(id=>({id,status:covered.has(id)?'included':pool.some(a=>a.primaryRegions.includes(id))?'time_limited':'unavailable'})),
-    explanation: `${request.readiness === 'tired' ? '今天状态偏累，优先轻负荷候选。' : ''}${recent.size ? '近两天已完成的动作降低了优先级。' : '从简单、可控制的候选开始。'}${request.focus === 'balanced' ? '兼顾不同活动类型。' : request.focus === 'strength' ? `本次重点：${normalizedRequest.targetRegions.length?regionLabel(wanted):'全身均衡'}。只把主要训练部位计入覆盖。` : `优先安排${goals[request.focus]}相关活动。`}` };
+    explanation: `${request.readiness === 'tired' ? '今天状态偏累，优先轻负荷候选。' : ''}${recent.size ? '近两天已完成的动作降低了优先级。' : '从简单、可控制的候选开始。'}${request.focus === 'balanced' ? '兼顾不同活动类型。' : request.focus === 'strength' ? `本次重点：${normalizedRequest.targetRegions.length?regionLabel(wanted):'全身均衡'}。只把主要训练部位计入覆盖。` : `优先安排${goals[request.focus]}相关活动。`}${abilityLine}`, abilityNotes };
 }
 export function replaceItem(plan, itemId, profile) {
   const item = plan.items.find(i => i.id === itemId);

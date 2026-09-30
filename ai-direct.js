@@ -4,7 +4,13 @@
 import { buildMessages } from './ai.js';
 import { skillPrompts } from './skill-prompts.js';
 
-const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'knowledge-import': 0 };
+const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'knowledge-import': 0, 'creator-method': 0.3 };
+// 整理类任务可在 AI 设置里另选模型（同一服务商百炼，不需要重新授权）；「安排」始终用默认模型。
+export const ORGANIZE_SKILLS = ['log', 'ability-intake', 'knowledge-import', 'creator-method'];
+export const ORGANIZE_MODELS = ['qwen3.8-flash', 'qwen3.8-max'];
+export const organizeModelAllowed = (skill, model) => ORGANIZE_SKILLS.includes(skill) && ORGANIZE_MODELS.includes(model);
+// 本次调用要换用的模型；null 表示用默认模型。
+export const organizeModel = (state, skill) => { const m = state?.settings?.aiOrganizeModel; return organizeModelAllowed(skill, m) ? m : null; };
 // 直连只放行这张表里的服务；index.html 与 serve.mjs 的 connect-src 必须同步（有测试核对）。
 export const DIRECT_HOSTS = ['dashscope.aliyuncs.com'];
 export const allowedBase = base => { try { const u = new URL(base); return u.protocol === 'https:' && DIRECT_HOSTS.includes(u.hostname); } catch { return false; } };
