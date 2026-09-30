@@ -1,17 +1,17 @@
 // 创作者方法卡：把用户已确认的、同一位创作者的多张知识卡，归纳成一张可回顾的「方法卡」。
 // 与 knowledge.js 同一条纪律：AI 只能复述已确认卡片里的内容，每条原则都要逐字指回来源卡；
 // 用户逐条确认后才写入 state.creatorProfiles。本文件是纯函数，不发网络请求。
-import { activities } from './catalog.js';
+import { activities, activityById } from './catalog.js';
 
 const uid=()=>globalThis.crypto?.randomUUID?.()||`creator-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const clip=(value,max)=>String(value||'').trim().slice(0,max);
 const squash=value=>String(value||'').toLowerCase().replace(/[\s，,。.;；:：、!！?？()（）\[\]【】"'“”‘’\-—_~～]/g,'');
 const date=now=>now.toISOString();
-const known=new Map(activities.map(a=>[a.id,a]));
+const known={has:id=>Boolean(activityById(id)),get:activityById};
 // 与 knowledge.js 保持一致：方法卡不写医学承诺、不写因果结论。
 const forbidden=/诊断|治疗|治愈|根治|矫正|(?:无力|失衡|紧张|薄弱).{0,8}(?:导致|造成)|(?:导致|造成).{0,12}(?:圆肩|骨盆|疼痛|痛)/;
 // 平台占位名（抖音 / 小红书…）不是创作者，不能作为归组依据。
-const PLATFORM_LABELS=new Set(['抖音','小红书','B 站','网页','其他来源']);
+const PLATFORM_LABELS=new Set(['抖音','小红书','B 站','网页','其他来源','AI 搜索']);
 const isPlatformLabel=name=>{const s=clip(name,80);return !s||PLATFORM_LABELS.has(s)||/分享$/.test(s);};
 
 // 一张已确认知识卡属于哪位创作者：优先用捕获里解析出的创作者名，其次用知识卡的作者标题；
@@ -107,18 +107,20 @@ export function validateCreatorMethod(output,{cards}){
     if(!sources.length)errors.push(`${at}的来源必须逐字摘自对应知识卡`);
     if(text&&sources.length&&!forbidden.test(text))drafts.push({text,sources});
   });
-  const links=[],seen=new Set();
+  // 关联动作是可选附加信息：不合规的只略去并提示，不让整张方法卡失败；方法的逐字来源仍然严格。
+  const links=[],seen=new Set(),warnings=[];
   const rawLinks=Array.isArray(card.activityLinks)?card.activityLinks:[];
-  if(rawLinks.length>6)errors.push('activityLinks 最多 6 条');
+  if(rawLinks.length>6)warnings.push(`AI 给了 ${rawLinks.length} 个关联动作，只保留前 6 个。`);
   rawLinks.slice(0,6).forEach((link,n)=>{
-    const activityId=link?.activityId;
-    if(!known.has(activityId))errors.push(`第 ${n+1} 个关联动作不在动作库中`);
-    else if(!cardActivityIds.has(activityId))errors.push(`第 ${n+1} 个关联动作没有出现在这位创作者的知识卡里`);
-    else if(seen.has(activityId))errors.push(`第 ${n+1} 个关联动作重复`);
+    const activityId=link?.activityId,name=known.get(activityId)?.name;
+    const skip=reason=>warnings.push(`已略去第 ${n+1} 个关联动作${name?`「${name}」`:''}：${reason}。`);
+    if(!name)skip('不在动作库中');
+    else if(!cardActivityIds.has(activityId))skip('没有出现在这位创作者的知识卡里');
+    else if(seen.has(activityId))skip('重复');
     else {seen.add(activityId);links.push(activityId);}
   });
   if(errors.length)return {ok:false,errors};
-  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),principles:drafts,activityIds:links}};
+  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),principles:drafts,activityIds:links},warnings};
 }
 
 // 用户确认后写入 / 更新这位创作者的方法卡。同一创作者只保留一张，重整时保留原有的「用于安排」开关。

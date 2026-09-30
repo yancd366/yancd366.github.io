@@ -1,11 +1,12 @@
 import { activities, relations, seedNotes, seedKnowledge, goals, bodyRegions, regionLabel } from './catalog.js';
 import { safetyContext, safetyBlock, canonicalMovement, eligibleRisk } from './safety.js';
 import { activeAssessments } from './abilities.js';
+import { useForPhase, useLabel } from './activity-uses.js';
 export const SCHEMA_VERSION = 1;
 export const STORE_KEY = 'xundong.v1';
 export const uid = () => globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 export function initialState() {
-  return { schemaVersion: SCHEMA_VERSION, profile: { name: '', focus: 'balanced', equipment: [], experience: 'beginner', goalText: '', bodyNotes: '', ageRange:'', sleepHours:null, sittingHours:null, preferredSports:'', skipWarmup: false, updatedAt: null }, assessments:[], abilityEvidence:[], settings:{aiConsent:null, aiDirect:null, ingest:null, aiOrganizeModel:null}, notes: structuredClone(seedNotes), knowledge: structuredClone(seedKnowledge), captures:[], creatorProfiles:[], sessions: [], observations: [], draft: null };
+  return { schemaVersion: SCHEMA_VERSION, profile: { name: '', focus: 'balanced', equipment: [], experience: 'beginner', goalText: '', bodyNotes: '', ageRange:'', sleepHours:null, sittingHours:null, preferredSports:'', skipWarmup: false, updatedAt: null }, assessments:[], abilityEvidence:[], settings:{aiConsent:null, aiDirect:null, ingest:null, aiOrganizeModel:null, useCorpus:true}, notes: structuredClone(seedNotes), knowledge: structuredClone(seedKnowledge), captures:[], creatorProfiles:[], savedPlans:[], activityUses:[], topicCards:[], digestedAt:null, personalActivities:[], sessions: [], observations: [], draft: null };
 }
 export function eligible(activity, request, profile) {
   return activity.selectable !== false && activity.places.includes(request.place)
@@ -47,6 +48,9 @@ export function abilityWeight(activity, assessments = [], now = new Date()) {
   }
   return { delta: Math.max(-6, Math.min(6, delta)), hints };
 }
+// 用户手动加入的动作（包括「仅手动使用」的个人动作）：不看重点筛选和是否可自动安排，
+// 但场地、器械、难度、冲击和安全限制照样检查。
+export const manualEligible = (a, request, profile) => eligible({ ...a, selectable: true }, { ...request, focus: 'balanced', targetRegions: [], readiness: request.readiness === 'normal' ? 'normal' : 'tired' }, profile);
 // AI plans assume a gym has the usual equipment; profile equipment describes what is at home.
 // An explicit request.equipment (e.g. "今天只有哑铃") overrides both.
 export const GYM_EQUIPMENT = ['mat','band','dumbbell','kettlebell','pullup_bar','jump_rope','bench','barbell','rack','smith','cable','machine','dip_bars'];
@@ -60,7 +64,8 @@ export function aiEligible(activity, request, profile) {
   if(safetyBlock(profile,request))return false;
   return eligible(activity, { place: request.place, equipment:availableEquipment(profile,request), focus: 'balanced', readiness: request.readiness === 'normal' ? 'normal' : 'tired' }, profile);
 }
-export function createPlan(request, profile, sessions = [], now = new Date(), assessments = []) {
+// options.activityUses：用户确认过的动作用途；挑热身 / 放松时优先用标了对应用途的动作。
+export function createPlan(request, profile, sessions = [], now = new Date(), assessments = [], options = {}) {
   const safety=safetyBlock(profile,request);if(safety)return {blocked:true,reason:safety};
   if (request.readiness === 'discomfort') return { blocked: true, reason: '先记录今天哪里不舒服，再决定是否适合训练。本版不根据症状自动开训练方案。' };
   if (profile.bodyNotes?.trim()) return { blocked: true, reason: '身体档案中有需要留意的情况。首版不能解析这些限制，请先明确适合的活动范围。' };
@@ -75,8 +80,14 @@ export function createPlan(request, profile, sessions = [], now = new Date(), as
   const scored = pool.map((a,index) => { const aw = abilityWeight(a, assessments, now); return { a, abilityHints: aw.hints, score: (a.category === request.focus ? 12 : 0) + (request.focus === 'balanced' && ['strength','mobility','cardio'].includes(a.category) ? 4 : 0) + (request.readiness === 'tired' && ['recovery','mobility'].includes(a.category) ? 6 : 0) - (recent.has(a.id) ? 8 : 0) - (profile.experience === 'regular' ? 0 : 3 * ((a.tier ?? 1) - 1)) - index / 100 + aw.delta }; }).sort((a,b) => b.score-a.score);
   const toItem = a => ({ id: uid(), activityId: a.id, activitySnapshot: structuredClone(a), plannedMinutes: a.minutes, status: 'pending', actualMinutes: null, feedback: '', actualSets: null, actualReps: null, actualLoadKg: null });
   // 热身 / 放松从放宽资格的池里选(不受力量的部位过滤限制),不进入 covered 区域统计。
-  const prepPool = phase => activities.filter(a => a.phase === phase && eligible(a, { ...normalizedRequest, focus: 'balanced', targetRegions: [] }, profile))
-    .sort((x,y) => (Number(recent.has(x.id))-Number(recent.has(y.id))) || ((x.tier??1)-(y.tier??1)) || (x.minutes-y.minutes));
+  // 用户标了「热身 / 活动度 / 放松」用途的动作也可进入对应阶段，并排在前面；部位与今天目标一致的更靠前。
+  const uses = options.activityUses || [];
+  const marked = (a, phase) => useForPhase(uses.filter(u => !u.region || !wanted.length || wanted.includes(u.region)), a.id, phase) || useForPhase(uses, a.id, phase);
+  const markRank = (a, phase) => { const u = marked(a, phase); return !u ? 2 : (!u.region || !wanted.length || wanted.includes(u.region)) ? 0 : 1; };
+  const prepPool = phase => activities.filter(a => (a.phase === phase || marked(a, phase)) && eligible(a, { ...normalizedRequest, focus: 'balanced', targetRegions: [] }, profile))
+    .sort((x,y) => (markRank(x,phase)-markRank(y,phase)) || (Number(recent.has(x.id))-Number(recent.has(y.id))) || ((x.tier??1)-(y.tier??1)) || (x.minutes-y.minutes));
+  const usedNotes = [];
+  const prepItem = (a, phase) => { const item = toItem(a), u = marked(a, phase); if (u) { item.role = phase; item.reason = `你的用途备注：${useLabel(u)}${u.note ? `（${u.note}）` : ''}。`; usedNotes.push({ activityId: a.id, name: a.name, label: useLabel(u), useId: u.id }); } return item; };
   let left = budget;
   const items = [];
   const maxItems = budget <= 10 ? 3 : 6;
@@ -85,7 +96,7 @@ export function createPlan(request, profile, sessions = [], now = new Date(), as
   // 除非用户选择「直接开练」,给正式训练前加 1 个热身(mobility 类不需要休息,时间从预算里扣)。
   if (budget > 10 && !profile.skipWarmup && ['strength','balanced','cardio','coordination'].includes(request.focus)) {
     const warmup = prepPool('warmup').find(a => a.minutes <= left);
-    if (warmup) { items.push(toItem(warmup)); left -= warmup.minutes; }
+    if (warmup) { items.push(prepItem(warmup, 'warmup')); left -= warmup.minutes; }
   }
   let mainCount = 0;
   while (scored.length && mainCount < maxItems) {
@@ -102,20 +113,23 @@ export function createPlan(request, profile, sessions = [], now = new Date(), as
   // 较长的安排收尾加 1 个放松(拉伸/呼吸);「直接开练」同样跳过。
   if (budget >= 25 && !profile.skipWarmup) {
     const cooldown = prepPool('cooldown').find(a => a.minutes <= left && !items.some(i=>i.activityId===a.id));
-    if (cooldown) { items.push(toItem(cooldown)); left -= cooldown.minutes; }
+    if (cooldown) { items.push(prepItem(cooldown, 'cooldown')); left -= cooldown.minutes; }
   }
   // 按 热身 → 正式(技术/协调 → 力量 → 核心/等长 → 心肺) → 放松 稳定排序,同名次保留选入顺序。
   items.forEach((it,idx) => { it._i = idx; });
-  items.sort((x,y) => { const rx=orderRank(x.activitySnapshot), ry=orderRank(y.activitySnapshot); return rx[0]-ry[0] || rx[1]-ry[1] || x._i-y._i; });
+  // role：按用户用途放进热身 / 放松的动作，按它这次担任的阶段排序。
+  const rank = it => it.role ? [PHASE_RANK[it.role], 0] : orderRank(it.activitySnapshot);
+  items.sort((x,y) => { const rx=rank(x), ry=rank(y); return rx[0]-ry[0] || rx[1]-ry[1] || x._i-y._i; });
   items.forEach(it => { delete it._i; });
   // Rest/setup is explicitly reserved; never stretch a short sample into a long prescription.
   const allocated = items.reduce((sum,i) => sum+i.plannedMinutes,0);
   const reserve = Math.min(left, Math.max(0, items.length-1));
   const abilityNotes = [...abilityHintMap.values()].map(h => ({ note: h.note, effect: h.effect }));
+  const useLine = usedNotes.length ? `参考了你的用途备注：${usedNotes.map(n => `${n.name}（${n.label}）`).join('、')}。` : '';
   const abilityLine = abilityNotes.length ? `已参考你的能力记录（${abilityNotes.map(n => n.note.slice(0, 16)).join('；')}），温和调整了相关动作。` : '';
   return { id: uid(), createdAt: now.toISOString(), startedAt: null, safetyContext:safetyContext(profile,normalizedRequest), request: structuredClone(normalizedRequest), items, plannedMinutes: allocated, transitionMinutes: reserve, unallocatedMinutes: left-reserve,
     regionCoverage: (normalizedRequest.targetRegions.length?wanted:[...new Set([...wanted,...covered])]).filter(()=>request.focus==='strength').map(id=>({id,status:covered.has(id)?'included':pool.some(a=>a.primaryRegions.includes(id))?'time_limited':'unavailable'})),
-    explanation: `${request.readiness === 'tired' ? '今天状态偏累，优先轻负荷候选。' : ''}${recent.size ? '近两天已完成的动作降低了优先级。' : '从简单、可控制的候选开始。'}${request.focus === 'balanced' ? '兼顾不同活动类型。' : request.focus === 'strength' ? `本次重点：${normalizedRequest.targetRegions.length?regionLabel(wanted):'全身均衡'}。只把主要训练部位计入覆盖。` : `优先安排${goals[request.focus]}相关活动。`}${abilityLine}`, abilityNotes };
+    explanation: `${request.readiness === 'tired' ? '今天状态偏累，优先轻负荷候选。' : ''}${recent.size ? '近两天已完成的动作降低了优先级。' : '从简单、可控制的候选开始。'}${request.focus === 'balanced' ? '兼顾不同活动类型。' : request.focus === 'strength' ? `本次重点：${normalizedRequest.targetRegions.length?regionLabel(wanted):'全身均衡'}。只把主要训练部位计入覆盖。` : `优先安排${goals[request.focus]}相关活动。`}${abilityLine}${useLine}`, abilityNotes, useNotes: usedNotes };
 }
 export function replaceItem(plan, itemId, profile) {
   const item = plan.items.find(i => i.id === itemId);
@@ -130,10 +144,12 @@ export function replaceItem(plan, itemId, profile) {
 export function checkPlanStart(plan, profile) {
   const block=safetyBlock(profile,plan.request);if(block)return block;
   if(plan.safetyContext&&plan.safetyContext!==safetyContext(profile,plan.request))return '身体档案或训练经历已变化，请重新生成安排。';
-  if (plan.source === 'ai') return plan.items.some(i => !activities.find(a => a.id === i.activityId && aiEligible(a, plan.request, profile))) ? '器械或动作条件已经变化，请撤下旧安排后重新生成。' : null;
+  // 收藏载入的安排和 AI 安排一样，只按安全 / 场地 / 器械过滤，不再套本地规则的重点筛选。
+  const ok = (i, test) => { const a = activities.find(x => x.id === i.activityId); return Boolean(a) && (i.manual ? !safetyBlock(profile, plan.request) && manualEligible(a, plan.request, profile) : test(a)); };
+  if (plan.source === 'ai' || plan.source === 'saved') return plan.items.some(i => !ok(i, a => aiEligible(a, plan.request, profile))) ? '器械或动作条件已经变化，请撤下旧安排后重新生成。' : null;
   if (profile.bodyNotes?.trim()) return '身体档案中有需要留意的情况，暂不自动开始训练。';
   if (plan.request.readiness === 'discomfort') return '今天有不舒服，请先记录状态。';
-  if (plan.items.some(i => !activities.find(a => a.id === i.activityId && eligible(a, plan.request, profile)))) return '器械或动作条件已经变化，请撤下旧安排后重新生成。';
+  if (plan.items.some(i => !ok(i, a => eligible(a, plan.request, profile)))) return '器械或动作条件已经变化，请撤下旧安排后重新生成。';
   return null;
 }
 export function applyReplacement(plan,itemId,activity){

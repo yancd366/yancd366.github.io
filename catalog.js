@@ -40,6 +40,16 @@ export const activities = modules.flatMap(m => m.activities).map(a=>{
     standardsVerified:false};
 });
 export const relations = modules.flatMap(m => m.relations);
+// 个人动作：和公共动作同一种单元格式，追加在 activities 末尾，所有模块照常查找、筛选、安排。
+// 这是 state.personalActivities 的派生缓存，由 app 在读取 / 保存数据后同步；公共动作不会被改动。
+export const PUBLIC_ACTIVITY_COUNT = activities.length;
+export const publicActivities = activities.slice();
+let index = new Map(activities.map(a => [a.id, a]));
+export const activityById = id => index.get(id);
+export function setPersonalActivities(list = []) {
+  activities.splice(PUBLIC_ACTIVITY_COUNT, activities.length - PUBLIC_ACTIVITY_COUNT, ...list);
+  index = new Map(activities.map(a => [a.id, a]));
+}
 // Private user notes live in browser storage, never in a distributable JavaScript bundle.
 export const seedNotes = [];
 export const seedKnowledge = [];

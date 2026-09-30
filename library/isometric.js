@@ -13,7 +13,7 @@ export const sources = {
 const S = (primaryRegions, secondaryRegions = []) => ({ primaryRegions, secondaryRegions });
 const iso = { system: 'isometric' };
 export const activities = [
-  entry('iso-plank', '前臂平板支撑', 'strength', ['腹横肌','腹直肌','肩带'], 4, { ...iso, ...S(['core'],['shoulders','hips_legs']), equipment: ['mat'], familyId: 'anti-extension', aliases: ['Front Plank','Plank','平板撑'], sourceId: 'isoAcePlank',
+  entry('iso-plank', '前臂平板支撑', 'strength', ['腹横肌','腹直肌','肩带'], 4, { ...iso, ...S(['core'],['shoulders','hips_legs']), equipment: ['mat'], familyId: 'anti-extension', aliases: ['Front Plank','Plank','平板撑','平板支撑'], sourceId: 'isoAcePlank',
     description: '以前臂和脚尖支撑保持身体笔直，是最基础的抗伸展核心等长动作。',
     setup: ['俯卧，肘部在肩正下方，前臂平放、掌心朝下。', '双腿伸直，勾脚尖踩地，大腿前侧收紧。', '初学可以双膝着地（跪姿平板）降低难度。'],
     steps: ['收紧腹部与臀部，把整个身体抬离垫面。', '从头、肩、髋到脚跟保持一直线，保持规定时间。', '时间到后保持躯干僵直，缓慢把身体放回垫面。'],

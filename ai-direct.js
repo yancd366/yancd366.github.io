@@ -4,11 +4,28 @@
 import { buildMessages } from './ai.js';
 import { skillPrompts } from './skill-prompts.js';
 
-const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'knowledge-import': 0, 'creator-method': 0.3 };
+const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'knowledge-import': 0, 'creator-method': 0.3, 'knowledge-ask': 0.2, 'corpus-digest': 0.3, 'knowledge-search': 0.2, 'activity-intake': 0.2 };
 // 整理类任务可在 AI 设置里另选模型（同一服务商百炼，不需要重新授权）；「安排」始终用默认模型。
-export const ORGANIZE_SKILLS = ['log', 'ability-intake', 'knowledge-import', 'creator-method'];
+export const ORGANIZE_SKILLS = ['log', 'ability-intake', 'knowledge-import', 'creator-method', 'knowledge-ask', 'corpus-digest', 'knowledge-search', 'activity-intake'];
 export const ORGANIZE_MODELS = ['qwen3.8-flash', 'qwen3.8-max'];
 export const organizeModelAllowed = (skill, model) => ORGANIZE_SKILLS.includes(skill) && ORGANIZE_MODELS.includes(model);
+// 只有这些技能会让百炼联网搜索（用户在「AI 搜索」里主动提问时）。
+// 兼容模式接口不返回搜索来源，模型会自己编链接；所以搜索走百炼原生接口，由程序取回真实的搜索结果
+// （标题、链接、网站名）附在回复的 searchResults 上——模型写的同名字段一律被覆盖。
+export const SEARCH_SKILLS = ['knowledge-search'];
+export async function callSearch({ base, key, model }, messages, temperature, { fetchImpl = fetch, timeoutMs = 180000 } = {}) {
+  const origin = new URL(base).origin;
+  const body = { model, input: { messages }, parameters: { result_format: 'message', temperature, enable_thinking: false, enable_search: true,
+    search_options: { forced_search: true, enable_source: true }, response_format: { type: 'json_object' } } };
+  let res;
+  try { res = await fetchImpl(`${origin}/api/v1/services/aigc/multimodal-generation/generation`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify(body) }); } catch { throw new AINetworkError(); }
+  if (!res.ok) throw new Error(`AI 搜索服务返回 ${res.status}：${(await res.text()).slice(0, 200)}`);
+  const data = await res.json(), content = data.output?.choices?.[0]?.message?.content;
+  const text = Array.isArray(content) ? content.map(x => x?.text || '').join('') : content;
+  const searchResults = (data.output?.search_info?.search_results || []).map(r => ({ index: r.index, title: String(r.title || '').trim(), url: r.url, site: r.site_name || '' }));
+  return { reply: { ...parseReply(text), searchResults }, usage: data.usage || null };
+}
 // 本次调用要换用的模型；null 表示用默认模型。
 export const organizeModel = (state, skill) => { const m = state?.settings?.aiOrganizeModel; return organizeModelAllowed(skill, m) ? m : null; };
 // 直连只放行这张表里的服务；index.html 与 serve.mjs 的 connect-src 必须同步（有测试核对）。
@@ -57,6 +74,7 @@ export async function callDirect(skill, messages, cfg, { fetchImpl = fetch, time
   if (!allowedBase(base)) throw new Error('本机直连目前只支持阿里云百炼（https://dashscope.aliyuncs.com），请在 AI 设置里改正接口地址。');
   const body = { model: cfg.model, messages, temperature: TEMPERATURE[skill] ?? 0.2, response_format: { type: 'json_object' } };
   if (/dashscope/.test(base)) body.enable_thinking = false;
+  if (SEARCH_SKILLS.includes(skill)) return callSearch({ base, key: cfg.key, model: cfg.model }, messages, body.temperature, { fetchImpl });
   let res;
   try {
     res = await fetchImpl(`${base}/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs),

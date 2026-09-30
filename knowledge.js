@@ -1,6 +1,8 @@
 // Personal social captures and knowledge cards. Captures preserve exactly what the user shared;
 // AI can only propose a card from capture.shareText and every claim must point back to it.
 import { activities } from './catalog.js';
+import { normalizeTopics, entryKind, corpusTopics } from './corpus.js';
+import { normalizeUse, replaceKnowledgeUses, dropKnowledgeUses } from './activity-uses.js';
 
 const uid=()=>globalThis.crypto?.randomUUID?.()||`knowledge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const clip=(value,max)=>String(value||'').trim().slice(0,max);
@@ -85,11 +87,13 @@ export function captureEvidence(capture){
 
 export function buildKnowledgeImportInput(state,capture){
   return {
-    source:{platform:capturePlatforms[capture.platform]||capture.platform, url:capture.rawUrl||null, creator:clip(capture.resolvedSource?.creatorName||capture.sourceTitle,180)||null, shareText:clip(capture.shareText,8000), userIntent:clip(capture.userNote,1000)||null, metadata:{title:clip(capture.resolvedSource?.title,180)||null,description:clip(capture.resolvedSource?.description,2000)||null}},
+    ...(capture.book?{book:capture.book}:{}),
+    source:{platform:capture.book?'书':capturePlatforms[capture.platform]||capture.platform, url:capture.rawUrl||null, creator:clip(capture.resolvedSource?.creatorName||capture.sourceTitle,180)||null, shareText:clip(capture.shareText,8000), userIntent:clip(capture.userNote,1000)||null, metadata:{title:clip(capture.resolvedSource?.title,180)||null,description:clip(capture.resolvedSource?.description,2000)||null}},
     evidence:captureEvidence(capture),
     catalog:activities.map(a=>({id:a.id,name:a.name,aliases:a.aliases.slice(0,5)})),
     existingTitles:(state.knowledge||[]).filter(k=>k.captureId!==capture.id).slice(-40).map(k=>clip(k.title,120)),
-    limits:{maxClaims:5,maxActivityLinks:4}
+    existingTopics:corpusTopics(state).slice(0,40).map(x=>x.topic),
+    limits:{maxClaims:5,maxActivityLinks:4,maxTopics:3}
   };
 }
 
@@ -119,22 +123,24 @@ export function validateKnowledgeImport(output,capture){
     if(forbidden.test(text))errors.push(`${at}不能写诊断、治疗或矫正承诺`);
     if(text&&piece&&!forbidden.test(text))drafts.push({text,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
   });
-  const links=[];
+  // 关联动作是可选附加信息：核对不上的只略去并提示，不让整张卡失败；观点的逐字核对仍然严格。
+  const links=[],warnings=[];
   const byId=new Map(activities.map(a=>[a.id,a]));
   const rawLinks=Array.isArray(card.activityLinks)?card.activityLinks:[];
-  if(rawLinks.length>4)errors.push('activityLinks 最多 4 条');
+  if(rawLinks.length>4)warnings.push(`AI 给了 ${rawLinks.length} 个关联动作，只保留前 4 个。`);
   const seen=new Set();
   rawLinks.slice(0,4).forEach((link,n)=>{
     const activity=byId.get(link?.activityId),evidenceQuote=clip(link?.evidenceQuote,500);
     const piece=link?.evidenceId?pieces.find(p=>p.id===link.evidenceId&&validEvidence(evidenceQuote,p.text)):pieces.find(p=>validEvidence(evidenceQuote,p.text));
-    if(!activity)errors.push(`第 ${n+1} 个关联动作不在动作库中`);
-    else if(seen.has(activity.id))errors.push(`第 ${n+1} 个关联动作重复`);
-    else if(!piece)errors.push(`第 ${n+1} 个关联动作缺少来源引证`);
-    else if(!activityMatchesEvidence(activity,evidenceQuote))errors.push(`第 ${n+1} 个关联动作无法由引证中的名称或别名核对`);
-    else {seen.add(activity.id);links.push({activityId:activity.id,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
+    const skip=reason=>warnings.push(`已略去第 ${n+1} 个关联动作${activity?`「${activity.name}」`:''}：${reason}。`);
+    if(!activity)skip('不在动作库中');
+    else if(seen.has(activity.id))skip('重复');
+    else if(!piece)skip('缺少原文引证');
+    else if(!activityMatchesEvidence(activity,evidenceQuote))skip('原文里找不到这个动作的名称或别名');
+    else {seen.add(activity.id);links.push({activityId:activity.id,...(normalizeUse(link)||{}),evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
   });
   if(errors.length)return {ok:false,errors};
-  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),claims:drafts,activityLinks:links}};
+  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),topics:normalizeTopics(card.topics),claims:drafts,activityLinks:links},warnings};
 }
 
 export function deleteKnowledge(state,knowledgeId){
@@ -142,6 +148,7 @@ export function deleteKnowledge(state,knowledgeId){
   if(!knowledge)throw new Error('找不到这条知识。');
   state.knowledge=state.knowledge.filter(k=>k.id!==knowledgeId);
   state.captures=(state.captures||[]).filter(c=>c.knowledgeId!==knowledgeId&&c.id!==knowledge.captureId);
+  dropKnowledgeUses(state,knowledgeId);
   return true;
 }
 
@@ -150,7 +157,8 @@ export function applyKnowledgeCard(state,captureId,card,now=new Date()){
   if(!capture)throw new Error('找不到这条来源，请刷新后重试。');
   const knowledge=(state.knowledge||[]).find(k=>k.id===capture.knowledgeId);
   if(!knowledge)throw new Error('找不到对应的知识卡，请刷新后重试。');
-  Object.assign(knowledge,{status:'saved',title:clip(card.title,120),text:clip(card.summary,700)||card.claims.map(c=>c.text).join('；'),url:capture.rawUrl,sourceTitle:clip(capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:card.activityLinks.map(x=>x.activityId),claims:card.claims,activityLinks:card.activityLinks,updatedAt:date(now)});
+  Object.assign(knowledge,{status:'saved',title:clip(card.title,120),text:clip(card.summary,700)||card.claims.map(c=>c.text).join('；'),url:capture.rawUrl,sourceTitle:clip(capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:card.activityLinks.map(x=>x.activityId),claims:card.claims,activityLinks:card.activityLinks,topics:normalizeTopics(card.topics),sourceKind:entryKind({},capture),updatedAt:date(now)});
   Object.assign(capture,{status:'card_created',cardDraft:null,updatedAt:date(now)});
+  replaceKnowledgeUses(state,knowledge,now);
   return knowledge;
 }

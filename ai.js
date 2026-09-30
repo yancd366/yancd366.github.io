@@ -1,14 +1,16 @@
 // Pure helpers for AI-assisted features. The model proposes; these functions decide what it sees
 // and what is allowed back in. Nothing here calls a network service.
-import { activities, goals, places, equipmentLabels, bodyRegions, systems, tiers, phases } from './catalog.js';
+import { activities, activityById, goals, places, equipmentLabels, bodyRegions, systems, tiers, phases } from './catalog.js';
 import { aiEligible, availableEquipment, uid, PHASE_RANK } from './domain.js';
 
 import { safetyBlock, safetyContext, canonicalMovement } from './safety.js';
 import { validateSets, setSummary, setsText, parseSetsText } from './training.js';
 import { activeAssessments, abilityDimensions, abilitySignals, abilitySides, abilityAreas } from './abilities.js';
+import { useForPhase, useLabel } from './activity-uses.js';
+import { corpusForPlan, summariesForPlan } from './corpus.js';
 export { setSummary, setsText, parseSetsText } from './training.js';
 
-const byId = new Map(activities.map(a => [a.id, a]));
+const byId = { get: activityById, has: id => Boolean(activityById(id)) };
 const DAY = 86400000;
 const READINESS = { normal: '状态还不错', tired: '有点疲惫', discomfort: '身体有不舒服' };
 export const localDate = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; };
@@ -116,7 +118,9 @@ export function validateIntake(output, defaults) {
 
 // ---------- skill: plan ----------
 
-export function buildPlanInput(state, request, { now = new Date(), previousPlan = null, instruction = '' } = {}) {
+// useCorpus=false 时（「参考我的知识库」关掉），知识条目、总结卡、用途备注都不发送。
+const corpusQuery = r => [goals[r.focus], (r.targetRegions || []).map(x => bodyRegions[x]?.label).join(' '), r.userText, r.preferences, r.bodyToday].filter(Boolean).join(' ');
+export function buildPlanInput(state, request, { now = new Date(), previousPlan = null, instruction = '', useCorpus = true } = {}) {
   const candidates = aiCandidates(request, state.profile);
   const ids = new Set(candidates.map(a => a.id));
   return {
@@ -135,8 +139,12 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
     history: historySummary(state, now),
     // 只送用户允许「温和参考」、仍有效的已确认观察；「仅保存」和已归档的不进上下文。
     abilityObservations:activeAssessments(state.assessments,now).filter(a=>a.recommendationUse==='gentle_preference').slice(-12).map(a=>({id:a.id,observedAt:a.observedAt,dimension:abilityDimensions[a.dimension]?.label||a.dimension,signal:abilitySignals[a.signal]||a.signal,bodyAreas:(a.bodyAreas||[]).map(x=>abilityAreas[x]||x),side:abilitySides[a.side]||'',context:a.context||'',note:clip(a.note,200),use:'温和参考：只影响安全候选内的排序'})),
-    personalKnowledge:(state.knowledge||[]).filter(k=>k.status==='saved'&&k.useInPlanning===true&&(!k.activityIds.length||k.activityIds.some(id=>ids.has(id)))).slice(-12).map(k=>({id:k.id,title:clip(k.title),text:clip(k.text,600),source:k.sourceTitle,url:k.url,evidence:'用户收藏，未必经过核实，不得覆盖安全规则'})),
+    // 从全部长期知识里按相关性挑（与候选动作、今天要求的字面重合），只受字数预算限制。
+    personalKnowledge: useCorpus ? corpusForPlan(state, { candidateIds: [...ids], text: corpusQuery(request) }) : [],
+    knowledgeSummaries: useCorpus ? summariesForPlan(state, { text: corpusQuery(request) }) : [],
     personalNotes: state.notes.filter(n => ids.has(n.activityId) && n.text.trim()).map(n => ({ activityId: n.activityId, text: clip(n.text) })),
+    // 用户确认过的动作用途（例如某动作「热身 · 髋腿」），只给本次候选里的动作。
+    activityUses: (useCorpus ? state.activityUses || [] : []).filter(u => ids.has(u.activityId)).map(u => ({ activityId: u.activityId, use: useLabel(u), note: u.note || '' })),
     candidateColumns: CANDIDATE_COLUMNS,
     candidates: candidates.map(candidateLine),
     progressionStandards: Object.fromEntries(candidates.filter(a => a.standardsVerified && a.standards.length).map(a => [a.id, a.standards.map(x => `${x.label} ${x.value}`).join('；')])),
@@ -144,7 +152,8 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
   };
 }
 
-export function validatePlan(output, { request, profile, now = new Date() }) {
+// refs：本次发给模型的知识条目 / 总结卡；模型在 knowledgeUsed 里点名的，只认这些。
+export function validatePlan(output, { request, profile, now = new Date(), uses = [], refs = [] }) {
   const errors = [], warnings = [];
   const block=safetyBlock(profile,request);if(block)return {ok:true,status:'refer',reason:block,warnings};
   if (!output || !['ok', 'clarify', 'refer'].includes(output.status)) return { ok: false, errors: ['status 应为 ok / clarify / refer'], warnings };
@@ -174,7 +183,10 @@ export function validatePlan(output, { request, profile, now = new Date() }) {
   if (!(typeof output.explanation === 'string' && output.explanation.trim())) errors.push('需要 explanation');
   if (errors.length) return { ok: false, errors, warnings };
   // 强制 热身 → 正式 → 放松 的跨阶段顺序;正式段内部保留模型给出的排序。
-  const phaseRank = i => PHASE_RANK[byId.get(i.activityId).phase] ?? 1;
+  // role：模型可以把动作放进另一个阶段，但只接受动作本身的阶段或用户用途允许的阶段。
+  const roleOf = i => { const own = byId.get(i.activityId).phase || 'main'; if (!['warmup', 'main', 'cooldown'].includes(i.role) || i.role === own) return null; if (useForPhase(uses, i.activityId, i.role)) return i.role; warnings.push(`${byId.get(i.activityId).name} 保持原阶段（没有对应的用途备注）`); return null; };
+  const roles = new Map(items.map(i => [i, roleOf(i)]));
+  const phaseRank = i => PHASE_RANK[roles.get(i) || byId.get(i.activityId).phase] ?? 1;
   const ordered = items.map((i, idx) => ({ i, idx })).sort((a, b) => phaseRank(a.i) - phaseRank(b.i) || a.idx - b.idx).map(x => x.i);
   if (ordered.some((i, n) => i !== items[n])) warnings.push('已按 热身 → 正式 → 放松 重新排序');
   items.splice(0, items.length, ...ordered);
@@ -185,9 +197,10 @@ export function validatePlan(output, { request, profile, now = new Date() }) {
     id: uid(), createdAt: now.toISOString(), startedAt: null, safetyContext:safetyContext(profile,request), source: 'ai', request: structuredClone(request),
     items: items.map(i => ({ id: uid(), activityId: i.activityId, activitySnapshot: structuredClone(byId.get(i.activityId)), plannedMinutes: i.minutes,
       prescription: { sets: i.sets ?? null, reps: i.reps != null ? String(i.reps) : null, seconds: i.seconds != null ? String(i.seconds) : null, perSide: Boolean(i.perSide), restSeconds: i.restSeconds ?? null, load: null },
-      reason: clip(i.reason, 200), status: 'pending', actualMinutes: null, feedback: '', actualSets: null, actualReps: null, actualLoadKg: null, actualSetDetails: null })),
+      reason: clip(i.reason, 200), ...(roles.get(i) ? { role: roles.get(i) } : {}), status: 'pending', actualMinutes: null, feedback: '', actualSets: null, actualReps: null, actualLoadKg: null, actualSetDetails: null })),
     // Same accounting as rule plans: a small transition reserve, the rest stays visible as unused time.
     plannedMinutes: planned, transitionMinutes: Math.min(request.minutes - planned, Math.max(0, items.length - 1)), unallocatedMinutes: request.minutes - planned - Math.min(request.minutes - planned, Math.max(0, items.length - 1)),
+    knowledgeUsed: (Array.isArray(output.knowledgeUsed) ? output.knowledgeUsed : []).map(id => refs.find(r => r.id === id)).filter((r, n, all) => r && all.indexOf(r) === n).slice(0, 6).map(r => ({ id: r.id, title: r.title, type: r.type || r.kind || '知识' })),
     explanation: clip(output.explanation, 400), cautions: (Array.isArray(output.cautions) ? output.cautions : []).filter(c => typeof c === 'string').map(c => clip(c, 200)).slice(0, 5),
     regionCoverage
   };
