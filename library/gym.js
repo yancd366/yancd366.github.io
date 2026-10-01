@@ -31,7 +31,7 @@ const G = (id, name, body, minutes, o) => entry(id, name, 'strength', body, minu
 const T2 = { tier: 2, difficulty: '中级' };
 export const activities = [
   // Squat and lunge patterns
-  G('g-back-squat', '杠铃颈后深蹲', ['股四头肌','臀','大腿内侧','竖脊肌'], 6, { ...R(['hips_legs'],['core']), ...T2, equipment: ['barbell','rack'], familyId: 'squat', aliases: ['Barbell Back Squat','深蹲','后蹲'], sourceId: 'gymAceBackSquat',
+  G('g-back-squat', '杠铃颈后深蹲', ['股四头肌','臀','大腿内侧','竖脊肌'], 6, { ...R(['hips_legs'],['core']), ...T2, equipment: ['barbell','rack'], familyId: 'squat', aliases: ['Barbell Back Squat','杠铃深蹲','后蹲'], sourceId: 'gymAceBackSquat',
     description: '杠铃置于上背的双侧下肢复合动作，发展臀腿整体力量。',
     setup: ['深蹲架挂钩调到略低于肩；安全杠调到深蹲最低点下方约一拳。', '钻到杠下，杠铃落在斜方肌上沿（高杠）或肩胛冈下方后三角肌处（低杠），双手略宽于肩握杠，肘向下压、肩胛收紧。', '起杠后后退两三步，双脚与肩同宽或略宽，脚尖外展约 15～30°。'],
     steps: ['吸气撑紧腹部，同时屈髋屈膝下蹲，膝盖顺着脚尖方向移动。', '下蹲约 2～3 秒，至大腿与地面平行或在保持背部中立时的最低点。', '脚掌全脚压地，髋与胸同步向上站起，杠铃保持在脚掌中部正上方。', '站直后髋膝伸直但不猛锁，调整呼吸再做下一次。'],

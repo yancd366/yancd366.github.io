@@ -33,8 +33,12 @@ const modules = [core, gym, bodyweight, convict, isometric, boxing, mobility];
 export const sources = Object.assign({}, ...modules.map(m => m.sources));
 // The doses are illustrative time boxes, not individualized exercise prescriptions.
 // Every candidate needs per-exercise editorial/clinical review before public release.
+// 例外（2026-10-01 用户决定）：囚徒健身深蹲第 5 式就是普通的徒手深蹲，按入门动作对待、可以自动安排；
+// 其余第 4 式以上仍需先评估或指导。
+const BASIC_BODYWEIGHT = { 'cc-squat-5': { tier: 1, difficulty: '入门 · 徒手深蹲（囚徒健身第 5 式）' } };
 export const activities = modules.flatMap(m => m.activities).map(a=>{
-  const guarded=a.familyId==='cc-hspu'||(a.familyId==='cc-bridge'&&a.level>=3)||a.id==='cc-squat-1'||a.tier===3||(a.system==='convict'&&a.level>3);
+  if(BASIC_BODYWEIGHT[a.id])a={...a,...BASIC_BODYWEIGHT[a.id]};
+  const guarded=!BASIC_BODYWEIGHT[a.id]&&(a.familyId==='cc-hspu'||(a.familyId==='cc-bridge'&&a.level>=3)||a.id==='cc-squat-1'||a.tier===3||(a.system==='convict'&&a.level>3));
   return {...a,canonicalId:a.id==='cc-pushup-1'?'wallpush':a.id,
     requiresGuidance:guarded, ...(guarded?{selectable:false,tier:3,difficulty:'需先评估或指导'}:{}),
     standardsVerified:false};

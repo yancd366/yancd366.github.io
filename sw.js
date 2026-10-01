@@ -1,4 +1,4 @@
-const CACHE='xundong-shell-v22';
+const CACHE='xundong-shell-v23';
 const ASSETS=['/','/styles.css','/app.js','/views.js','/ui.js','/domain.js','/catalog.js','/ai.js','/ai-direct.js','/skill-prompts.js','/training.js','/timing.js','/abilities.js','/knowledge.js','/creators.js','/saved-plans.js','/corpus.js','/activity-uses.js','/digest.js','/sources.js','/personal-activities.js','/ingest.js','/safety.js','/storage.js','/experience.js','/icon.svg','/manifest.webmanifest','/apple-touch-icon.png','/icon-192.png','/icon-512.png',...['entry','core','gym','bodyweight','convict','isometric','boxing','mobility'].map(x=>`/library/${x}.js`)];
 function safeResponse(path,response){
   if(!response.ok||response.redirected)return false;
