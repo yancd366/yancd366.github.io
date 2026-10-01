@@ -120,7 +120,8 @@ export function validateCreatorMethod(output,{cards}){
     else {seen.add(activityId);links.push(activityId);}
   });
   if(errors.length)return {ok:false,errors};
-  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),principles:drafts,activityIds:links},warnings};
+  const unknowns=(Array.isArray(card.unknowns)?card.unknowns:[]).map(u=>clip(u,120)).filter(u=>u&&!forbidden.test(u)).slice(0,4);
+  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),principles:drafts,activityIds:links,unknowns},warnings};
 }
 
 // 用户确认后写入 / 更新这位创作者的方法卡。同一创作者只保留一张，重整时保留原有的「用于安排」开关。
@@ -133,7 +134,7 @@ export function applyCreatorMethod(state,creatorKey,creatorName,card,now=new Dat
   const existing=findMethodCard(state,creatorKey);
   const base={creatorKey,creatorName:clip(creatorName,180),title:clip(card.title,120),summary:clip(card.summary,700),
     principles:card.principles.map(p=>({text:clip(p.text,400),sources:(p.sources||[]).map(s=>({knowledgeId:s.knowledgeId,quote:clip(s.quote,500)}))})),
-    activityIds:(card.activityIds||[]).filter(id=>known.has(id)),sourceKnowledgeIds,updatedAt:date(now)};
+    activityIds:(card.activityIds||[]).filter(id=>known.has(id)),unknowns:(card.unknowns||[]).map(u=>clip(u,120)).filter(Boolean).slice(0,4),sourceKnowledgeIds,updatedAt:date(now)};
   if(existing){Object.assign(existing,base);return existing;}
   const created={id:uid(),status:'saved',allowedInPlanning:false,createdAt:date(now),...base};
   state.creatorProfiles.push(created);

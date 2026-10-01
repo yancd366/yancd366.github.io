@@ -8,6 +8,8 @@ import { validateSets, setSummary, setsText, parseSetsText } from './training.js
 import { activeAssessments, abilityDimensions, abilitySignals, abilitySides, abilityAreas } from './abilities.js';
 import { useForPhase, useLabel } from './activity-uses.js';
 import { corpusForPlan, summariesForPlan } from './corpus.js';
+import { SELF_CHECK_TASKS } from './self-check.js';
+import { activeMethodPreference, methodPlanInput, validateMethodReport } from './method-plan.js';
 export { setSummary, setsText, parseSetsText } from './training.js';
 
 const byId = { get: activityById, has: id => Boolean(activityById(id)) };
@@ -138,10 +140,12 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
     },
     history: historySummary(state, now),
     // 只送用户允许「温和参考」、仍有效的已确认观察；「仅保存」和已归档的不进上下文。
-    abilityObservations:activeAssessments(state.assessments,now).filter(a=>a.recommendationUse==='gentle_preference').slice(-12).map(a=>({id:a.id,observedAt:a.observedAt,dimension:abilityDimensions[a.dimension]?.label||a.dimension,signal:abilitySignals[a.signal]||a.signal,bodyAreas:(a.bodyAreas||[]).map(x=>abilityAreas[x]||x),side:abilitySides[a.side]||'',context:a.context||'',note:clip(a.note,200),use:'温和参考：只影响安全候选内的排序'})),
+    abilityObservations:activeAssessments(state.assessments,now).filter(a=>a.recommendationUse==='gentle_preference').slice(-12).map(a=>({id:a.id,observedAt:a.observedAt,dimension:abilityDimensions[a.dimension]?.label||a.dimension,signal:abilitySignals[a.signal]||a.signal,bodyAreas:(a.bodyAreas||[]).map(x=>abilityAreas[x]||x),side:abilitySides[a.side]||'',context:a.context||'',note:clip(a.note,200),...(a.taskId?{relatedActivityIds:SELF_CHECK_TASKS.find(t=>t.id===a.taskId)?.prefers||[]}:{}),use:'温和参考：只影响安全候选内的排序'})),
     // 从全部长期知识里按相关性挑（与候选动作、今天要求的字面重合），只受字数预算限制。
     personalKnowledge: useCorpus ? corpusForPlan(state, { candidateIds: [...ids], text: corpusQuery(request) }) : [],
-    knowledgeSummaries: useCorpus ? summariesForPlan(state, { text: corpusQuery(request) }) : [],
+    // 选中的方法卡单独作为 methodPreference 发送，不再重复出现在总结里。
+    knowledgeSummaries: useCorpus ? summariesForPlan(state, { text: corpusQuery(request) }).filter(c => c.id !== activeMethodPreference(state)?.card.id) : [],
+    methodPreference: useCorpus ? methodPlanInput(activeMethodPreference(state), [...ids]) : null,
     personalNotes: state.notes.filter(n => ids.has(n.activityId) && n.text.trim()).map(n => ({ activityId: n.activityId, text: clip(n.text) })),
     // 用户确认过的动作用途（例如某动作「热身 · 髋腿」），只给本次候选里的动作。
     activityUses: (useCorpus ? state.activityUses || [] : []).filter(u => ids.has(u.activityId)).map(u => ({ activityId: u.activityId, use: useLabel(u), note: u.note || '' })),
@@ -153,7 +157,7 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
 }
 
 // refs：本次发给模型的知识条目 / 总结卡；模型在 knowledgeUsed 里点名的，只认这些。
-export function validatePlan(output, { request, profile, now = new Date(), uses = [], refs = [] }) {
+export function validatePlan(output, { request, profile, now = new Date(), uses = [], refs = [], method = null }) {
   const errors = [], warnings = [];
   const block=safetyBlock(profile,request);if(block)return {ok:true,status:'refer',reason:block,warnings};
   if (!output || !['ok', 'clarify', 'refer'].includes(output.status)) return { ok: false, errors: ['status 应为 ok / clarify / refer'], warnings };
@@ -181,6 +185,8 @@ export function validatePlan(output, { request, profile, now = new Date(), uses 
   const planned = items.reduce((n, i) => n + (Number.isInteger(i?.minutes) ? i.minutes : 0), 0);
   if (planned > request.minutes) errors.push(`动作合计 ${planned} 分钟，超过可用的 ${request.minutes} 分钟`);
   if (!(typeof output.explanation === 'string' && output.explanation.trim())) errors.push('需要 explanation');
+  const methodCheck = validateMethodReport(output.methodReport, method);
+  if (!methodCheck.ok) errors.push(methodCheck.error);
   if (errors.length) return { ok: false, errors, warnings };
   // 强制 热身 → 正式 → 放松 的跨阶段顺序;正式段内部保留模型给出的排序。
   // role：模型可以把动作放进另一个阶段，但只接受动作本身的阶段或用户用途允许的阶段。
@@ -202,7 +208,8 @@ export function validatePlan(output, { request, profile, now = new Date(), uses 
     plannedMinutes: planned, transitionMinutes: Math.min(request.minutes - planned, Math.max(0, items.length - 1)), unallocatedMinutes: request.minutes - planned - Math.min(request.minutes - planned, Math.max(0, items.length - 1)),
     knowledgeUsed: (Array.isArray(output.knowledgeUsed) ? output.knowledgeUsed : []).map(id => refs.find(r => r.id === id)).filter((r, n, all) => r && all.indexOf(r) === n).slice(0, 6).map(r => ({ id: r.id, title: r.title, type: r.type || r.kind || '知识' })),
     explanation: clip(output.explanation, 400), cautions: (Array.isArray(output.cautions) ? output.cautions : []).filter(c => typeof c === 'string').map(c => clip(c, 200)).slice(0, 5),
-    regionCoverage
+    regionCoverage,
+    ...(method ? { methodPreference: { id: method.id, title: method.title, mode: method.mode, modeLabel: method.modeLabel }, methodReport: methodCheck.report } : {})
   };
   return { ok: true, status: 'ok', plan, warnings };
 }

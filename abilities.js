@@ -47,15 +47,33 @@ export function abilityBlock(list, now = new Date()) {
 // ---------- AI skill: ability-intake ----------
 // 红旗症状由程序兜底：模型没有转介，也按转介处理。
 export const RED_FLAGS = /胸痛|胸闷|心悸|心慌|呼吸困难|喘不上气|晕厥|昏厥|头晕|麻木|发麻|放射痛|发烧|发热|急性|刚扭|肿胀|变形|骨折/;
+// 红旗词出现在明确的否定 / 已缓解语境里（「没有发烧」「不头晕」「以前胸闷过，现在没有了」）时，
+// 不直接转介，也不默默放行：先请用户确认「现在没有这些情况」，确认后才继续。
+// 只要有一处不是否定语境（「没有胸痛，但有点头晕」），照常转介。否定在词后面（「头晕不明显」）按非否定处理，偏保守。
+const NEGATED_BEFORE = /(?:没有|没|无|不|未|并无|从未|从没|否认)(?:任何|什么|过|出现|感到|觉得|有)?$/;
+const RESOLVED_AFTER = /^[^，。；,;!！?？]{0,6}[，,]?\s*(?:现在|目前|已经|最近)?(?:都)?(?:没有了|没了|好了|消失了|不再|缓解了|没再)/;
+const PAST_BEFORE = /(?:以前|之前|过去|曾经|原来|小时候|去年|上个月|几年前)[^，。；,;]{0,4}$/;
+export function redFlagCheck(rawText, cleared = []) {
+  const text = String(rawText || ''), re = new RegExp(RED_FLAGS.source, 'g'), hits = [];
+  for (const m of text.matchAll(re)) {
+    const before = text.slice(Math.max(0, m.index - 6), m.index), after = text.slice(m.index + m[0].length, m.index + m[0].length + 16);
+    const negated = NEGATED_BEFORE.test(before) || (PAST_BEFORE.test(before) && RESOLVED_AFTER.test(after));
+    hits.push({ word: m[0], negated });
+  }
+  if (!hits.length) return { status: 'clear', flags: [] };
+  if (hits.some(h => !h.negated)) return { status: 'refer', flags: [...new Set(hits.filter(h => !h.negated).map(h => h.word))] };
+  const flags = [...new Set(hits.map(h => h.word))];
+  return flags.every(f => cleared.includes(f)) ? { status: 'clear', flags } : { status: 'confirm', flags };
+}
 const PAIN = /疼|痛/;
 export const MAX_ABILITY_DRAFTS = 6;
 // 模型只能提议「仅保存」或「温和参考」；提到疼痛的条目不能作为推荐依据。
 export const allowedUses = draft => draft.recommendationUse === 'safety_review' ? ['safety_review', 'off'] : PAIN.test(`${draft.evidenceQuote || ''}${draft.note || ''}`) ? ['off', 'safety_review'] : ['off', 'gentle_preference', 'safety_review'];
 
-export function buildAbilityIntakeInput(state, { rawText, source, observedOn }, now = new Date()) {
+export function buildAbilityIntakeInput(state, { rawText, source, observedOn, flagsCleared = [] }, now = new Date()) {
   const label = (dict, keys) => Object.fromEntries(keys.map(k => [k, dict[k]]));
   return {
-    today: today(now), rawText: String(rawText || '').trim(), source: abilitySources[source] || abilitySources.self_report, observedOn: observedOn || today(now),
+    today: today(now), rawText: String(rawText || '').trim(), confirmedAbsent: flagsCleared, source: abilitySources[source] || abilitySources.self_report, observedOn: observedOn || today(now),
     profile: { experience: state.profile.experience === 'regular' ? '有规律训练经历' : '刚开始 / 重新开始', goalText: state.profile.goalText || '', preferredSports: state.profile.preferredSports || '' },
     existing: activeAssessments(state.assessments, now).slice(-12).map(a => ({ observedAt: a.observedAt, dimension: a.dimension, signal: a.signal, bodyAreas: a.bodyAreas, side: a.side, note: a.note.slice(0, 120) })),
     maxDrafts: MAX_ABILITY_DRAFTS,
@@ -63,9 +81,10 @@ export function buildAbilityIntakeInput(state, { rawText, source, observedOn }, 
   };
 }
 
-export function validateAbilityIntake(output, { rawText, observedOn, now = new Date() }) {
+export function validateAbilityIntake(output, { rawText, observedOn, flagsCleared = [], now = new Date() }) {
   const referReason = '你提到的情况可能需要及时处理，不适合由 App 自行判断。请先咨询医生或康复专业人员；这段内容不会写进能力档案。';
-  if (RED_FLAGS.test(rawText) && output?.status !== 'refer') return { ok: true, status: 'refer', reason: referReason };
+  // 程序兜底：没有经用户确认排除的红旗一律转介（模型没转介也一样）。
+  if (redFlagCheck(rawText, flagsCleared).status !== 'clear' && output?.status !== 'refer') return { ok: true, status: 'refer', reason: referReason };
   if (!output || !['ok', 'clarify', 'refer'].includes(output.status)) return { ok: false, errors: ['status 应为 ok / clarify / refer'] };
   if (output.status === 'clarify') return typeof output.question === 'string' && output.question.trim() ? { ok: true, status: 'clarify', question: output.question.trim().slice(0, 200) } : { ok: false, errors: ['clarify 需要 question'] };
   if (output.status === 'refer') return { ok: true, status: 'refer', reason: typeof output.reason === 'string' && output.reason.trim() ? output.reason.trim().slice(0, 300) : referReason };

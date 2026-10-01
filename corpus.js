@@ -50,7 +50,7 @@ export const STORAGE_LIMIT = 5_000_000;
 export function storageUsage(state) {
   const used = JSON.stringify(state).length, ratio = used / STORAGE_LIMIT;
   return { used, limit: STORAGE_LIMIT, ratio, level: ratio >= 0.85 ? 'full' : ratio >= 0.7 ? 'warn' : 'ok',
-    text: `约 ${(used / 1e6).toFixed(used < 1e5 ? 2 : 1)} / 5 MB`, };
+    text: used < 1e4 ? '不到 0.01 / 5 MB' : `约 ${(used / 1e6).toFixed(used < 1e5 ? 2 : 1)} / 5 MB` };
 }
 
 // ---------- 按相关性从全部语料挑选 ----------

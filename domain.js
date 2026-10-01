@@ -2,6 +2,7 @@ import { activities, relations, seedNotes, seedKnowledge, goals, bodyRegions, re
 import { safetyContext, safetyBlock, canonicalMovement, eligibleRisk } from './safety.js';
 import { activeAssessments } from './abilities.js';
 import { useForPhase, useLabel } from './activity-uses.js';
+import { selfCheckPreference, SELF_CHECK_TASKS } from './self-check.js';
 export const SCHEMA_VERSION = 1;
 export const STORE_KEY = 'xundong.v1';
 export const uid = () => globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -38,7 +39,9 @@ export function abilityWeight(activity, assessments = [], now = new Date()) {
   for (const a of active) {
     const regions = new Set((a.bodyAreas || []).flatMap(area => ABILITY_AREA_TO_REGION[area] || []));
     let d = 0;
-    if (a.signal === 'limited' && activity.primaryRegions.some(r => regions.has(r))) {
+    // 简短自评的记录：只让对应的那个练习稍微靠前，不再按部位下调力量动作。
+    if (a.taskId) { if (selfCheckPreference(a, activity.id)) d = 3; }
+    else if (a.signal === 'limited' && activity.primaryRegions.some(r => regions.has(r))) {
       if (activity.category === 'strength' || activity.impact !== 'low') d = -4;
     } else if (a.signal === 'fatigued' && (a.bodyAreas?.includes('whole_body') || !a.bodyAreas?.length)) {
       if (activity.category === 'recovery' || activity.category === 'mobility') d = 3;
@@ -84,8 +87,9 @@ export function createPlan(request, profile, sessions = [], now = new Date(), as
   const uses = options.activityUses || [];
   const marked = (a, phase) => useForPhase(uses.filter(u => !u.region || !wanted.length || wanted.includes(u.region)), a.id, phase) || useForPhase(uses, a.id, phase);
   const markRank = (a, phase) => { const u = marked(a, phase); return !u ? 2 : (!u.region || !wanted.length || wanted.includes(u.region)) ? 0 : 1; };
+  const prefRank = a => abilityWeight(a, assessments, now).delta > 0 ? 0 : 1;
   const prepPool = phase => activities.filter(a => (a.phase === phase || marked(a, phase)) && eligible(a, { ...normalizedRequest, focus: 'balanced', targetRegions: [] }, profile))
-    .sort((x,y) => (markRank(x,phase)-markRank(y,phase)) || (Number(recent.has(x.id))-Number(recent.has(y.id))) || ((x.tier??1)-(y.tier??1)) || (x.minutes-y.minutes));
+    .sort((x,y) => (markRank(x,phase)-markRank(y,phase)) || (prefRank(x)-prefRank(y)) || (Number(recent.has(x.id))-Number(recent.has(y.id))) || ((x.tier??1)-(y.tier??1)) || (x.minutes-y.minutes));
   const usedNotes = [];
   const prepItem = (a, phase) => { const item = toItem(a), u = marked(a, phase); if (u) { item.role = phase; item.reason = `你的用途备注：${useLabel(u)}${u.note ? `（${u.note}）` : ''}。`; usedNotes.push({ activityId: a.id, name: a.name, label: useLabel(u), useId: u.id }); } return item; };
   let left = budget;
