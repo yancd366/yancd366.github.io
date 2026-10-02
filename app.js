@@ -202,7 +202,18 @@ function knowledgeDialog(id){
 }
 function captureDialog(id){
   const capture=id?(state.captures||[]).find(c=>c.id===id):null;
-  showModal(capture?'补充分享内容':'收藏一条分享',`<form id="capture-form" data-id="${esc(capture?.id||'')}"><label>分享链接<input name="rawUrl" type="url" inputmode="url" value="${esc(capture?.rawUrl||'')}" placeholder="抖音、小红书、B 站或网页链接" ${capture?'readonly':''}></label><label>作者或来源（可选）<input name="sourceTitle" maxlength="180" value="${esc(capture?.sourceTitle||'')}" placeholder="例如：谭成义"></label><label>分享文字 / 文案 / 字幕（可选）<textarea name="shareText" maxlength="8000" rows="5" placeholder="直接粘贴链接也可以。已启用云端服务的公开抖音视频会尝试自动转成文字。">${esc(capture?.shareText||'')}</textarea></label><label>我为什么想收藏（可选）<textarea name="userNote" maxlength="1000" placeholder="例如：想试试他的髋部训练思路。">${esc(capture?.userNote||'')}</textarea></label><p class="helper left">原始分享会先保存在本机。自动整理只在你配置服务后，对公开抖音视频发送链接并转写；失败也不会丢失收藏。</p><button type="submit" class="primary full">${capture?'保存补充内容':'存入收件箱'} ${icon('bookmark')}</button></form>${capture?'':'<button class="secondary full" data-action="paste-capture">从剪贴板粘贴</button>'}`);
+  if(capture){
+    showModal('补充分享内容',`<form id="capture-form" data-id="${esc(capture.id)}"><label>分享链接<input name="rawUrl" type="url" value="${esc(capture.rawUrl||'')}" readonly></label><label>作者或来源（可选）<input name="sourceTitle" maxlength="180" value="${esc(capture.sourceTitle||'')}"></label><label>分享文字 / 文案 / 字幕（可选）<textarea name="shareText" maxlength="8000" rows="5">${esc(capture.shareText||'')}</textarea></label><label>我为什么想收藏（可选）<textarea name="userNote" maxlength="1000">${esc(capture.userNote||'')}</textarea></label><button type="submit" class="primary full">保存补充内容 ${icon('bookmark')}</button></form>`);
+    return;
+  }
+  // 新收藏：抖音 / 小红书 / B 站「复制链接」得到的整段文字直接粘进来，链接、平台和作者自动识别。
+  showModal('收藏一条分享',`<button class="primary full" type="button" data-action="paste-capture">${icon('link')} 一键粘贴刚复制的分享</button><form id="capture-form"><label>分享内容<textarea name="shareText" maxlength="8000" rows="5" placeholder="把抖音、小红书、B 站「复制链接」得到的整段文字粘贴在这里，不用自己挑出链接。也可以只写一段文字。"></textarea></label><p class="small muted" id="capture-detect">粘贴后这里会显示识别到的链接。</p><details><summary>补充信息（可选）</summary><label>作者或来源<input name="sourceTitle" maxlength="180" placeholder="不填会尽量从分享文字里认出来"></label><label>我为什么想收藏<textarea name="userNote" maxlength="1000" rows="2" placeholder="例如：想试试他的髋部训练思路。"></textarea></label></details><p class="helper left">原始分享先保存在本机。已配置自动视频整理时，公开视频会自动转成知识卡草稿；失败也不会丢失收藏。</p><button type="submit" class="primary full">存入收件箱 ${icon('bookmark')}</button></form>`);
+}
+// 粘贴框实时显示识别结果。
+function showCaptureDetection(){
+  const form=$('#capture-form'),out=$('#capture-detect');if(!form||form.dataset.id||!out)return;
+  const r=splitSharedText(form.shareText.value);
+  out.textContent=!form.shareText.value.trim()?'粘贴后这里会显示识别到的链接。':r.rawUrl?`✓ 识别到${capturePlatforms[r.platform]||''}链接：${r.rawUrl.replace(/^https?:\/\//,'').slice(0,48)}${r.creatorHint?` · 作者：${r.creatorHint}`:''}`:'没有识别到链接，会作为一段文字保存。';
 }
 function ingestSettingsDialog(){
   // 两条线路都可以配置，选一条作为当前使用；进行中的任务仍在提交它的线路上查询。
@@ -552,9 +563,8 @@ document.addEventListener('click',e=>{
       navigator.clipboard?.readText?.().then(text=>{
         const value=String(text||'').trim(),{rawUrl,shareText}=splitSharedText(value);
         const dialog=$('#sheet'),form=dialog.querySelector('#capture-form');if(!form)return;
-        if(rawUrl)form.rawUrl.value=rawUrl;
-        if(shareText)form.shareText.value=shareText;
-        toast(rawUrl?'已提取分享链接。':'已粘贴文字。');
+        form.shareText.value=value;showCaptureDetection();
+        toast(rawUrl?'已粘贴，识别到分享链接。':shareText?'已粘贴文字（没有识别到链接）。':'剪贴板是空的。');
       }).catch(()=>toast('无法读取剪贴板，请手动粘贴。'));
       break;
     }
@@ -563,7 +573,7 @@ document.addEventListener('click',e=>{
   }
 });
 document.addEventListener('change',e=>{if(e.target.id==='method-card'||e.target.id==='method-mode'){const id=$('#method-card')?.value||null,mode=$('#method-mode')?.value||'inspiration';if(commit(s=>s.settings.methodPreference=id?{creatorProfileId:id,mode}:null)){render();toast(id?`下次 AI 安排会按「${state.creatorProfiles.find(p=>p.id===id)?.title}」· ${METHOD_MODES[mode].label}。`:'不按创作者方法安排。');}return;}if(e.target.dataset.activityPlanning){const id=e.target.dataset.activityPlanning,use=e.target.value;if(commit(s=>setActivityPlanning(s,id,use))){render();detail(id);toast(use==='allowed'?'之后的安排可以自动选到它了。':'改为仅手动使用。');}return;}if(e.target.dataset.topicPlanning){const id=e.target.dataset.topicPlanning,on=e.target.checked;if(commit(s=>setTopicPlanning(s,id,on))){render();toast(on?'这张主题总结会参与安排。':'这张主题总结不再参与安排。');}else render();return;}if(e.target.id==='use-corpus'){const on=e.target.checked;if(commit(s=>s.settings.useCorpus=on))toast(on?'安排时会参考你的知识库。':'这之后的安排不参考知识库。');return;}if(e.target.matches('[data-ai-organize-model]')){const m=ORGANIZE_MODELS.includes(e.target.value)?e.target.value:null;if(commit(s=>s.settings.aiOrganizeModel=m))toast(m?`整理类任务将使用 ${m}。`:'整理类任务改回和安排用同一个模型。');return;}if(e.target.dataset.methodPlanning){const id=e.target.dataset.methodPlanning,allowed=e.target.checked;if(commit(s=>setMethodPlanning(s,id,allowed))){render();toast(allowed?'已允许这张方法卡参与安排。':'已取消用于安排。');}else render();return;}if(e.target.dataset.abilityUse){const id=e.target.dataset.abilityUse,use=e.target.value,a=state.assessments.find(a=>a.id===id);if(a&&allowedUses(a).includes(use)&&commit(s=>s.assessments.find(a=>a.id===id).recommendationUse=use)){render();toast(use==='gentle_preference'?'已设为温和参考，会参与之后的安排。':'已更新用途。');}else render();return;}if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness')request.readiness=e.target.value;if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
-document.addEventListener('input',e=>{if(e.target.id==='ai-text')aiState.text=e.target.value;if(e.target.id==='activity-search'){const pos=e.target.selectionStart;filters.search=e.target.value;render();const input=$('#activity-search');input.focus();input.setSelectionRange(pos,pos);}});
+document.addEventListener('input',e=>{if(e.target.matches?.('#capture-form [name=shareText]'))showCaptureDetection();if(e.target.id==='ai-text')aiState.text=e.target.value;if(e.target.id==='activity-search'){const pos=e.target.selectionStart;filters.search=e.target.value;render();const input=$('#activity-search');input.focus();input.setSelectionRange(pos,pos);}});
 document.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.target,f=new FormData(form);
   try{

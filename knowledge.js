@@ -9,10 +9,32 @@ const clip=(value,max)=>String(value||'').trim().slice(0,max);
 const squash=value=>String(value||'').toLowerCase().replace(/[\s，,。.;；:：、!！?？()（）\[\]【】"'“”‘’\-—_~～]/g,'');
 const date=now=>now.toISOString();
 
+// 抖音 / 小红书 / B 站「复制链接」得到的是一段文字中间夹一个链接。这里取出链接，去掉平台套话和
+// 口令码，并尽量从套话里认出作者（「【某某的作品】」「某某发布了一篇小红书笔记」）。
+const SHARE_BOILERPLATE=[
+  /复制打开抖音[，,]?\s*看看/g, /复制此链接[，,]?\s*打开(?:抖音|Dou音)搜索[，,]?\s*直接观看视频[！!]?/g, /打开抖音搜索[，,]?\s*直接观看视频[！!]?/g,
+  /复制本条信息[，,]?\s*打开【小红书】\s*App\s*查看精彩内容[！!]?/gi, /带上口令[，,]?\s*来【小红书】\s*看笔记全文[~～！!]?/g, /发布了一篇小红书笔记[，,]?\s*快来看吧[！!]?/g,
+  /😆\s*[A-Za-z0-9]{6,20}\s*😆/g
+];
+const junkToken=t=>t.length<=10&&/^[A-Za-z0-9@.:\/_-]+$/.test(t)&&(/[@.:\/]/.test(t)||/^\d{2}\/\d{2}$/.test(t));
+function trimJunk(text){
+  let t=text.trim().replace(/^\d+\.\d+\s+/,'');
+  for(let i=0;i<5;i++){const m=t.match(/(?:^|\s)(\S+)$/);if(!m||!junkToken(m[1]))break;t=t.slice(0,t.length-m[1].length).trim();}
+  for(let i=0;i<5;i++){const m=t.match(/^(\S+)(?:\s|$)/);if(!m||!junkToken(m[1]))break;t=t.slice(m[1].length).trim();}
+  return t;
+}
 export function splitSharedText(value){
   const text=String(value||'').trim();
-  const rawUrl=text.match(/https?:\/\/[^\s，。；;）)]+/i)?.[0]?.replace(/["'”’!?！？]+$/,'')||'';
-  return {rawUrl,shareText:rawUrl?text.replace(rawUrl,'').trim():text};
+  const rawUrl=text.match(/https?:\/\/[^\s，。；;）)]+/i)?.[0]?.replace(/["'”’!?！？，,。]+$/,'')||'';
+  // 没有链接的文字（书摘、自己的想法）原样保留，不做任何清理。
+  if(!rawUrl)return {rawUrl:'',shareText:text,creatorHint:'',platform:null};
+  let rest=rawUrl?text.replace(rawUrl,' '):text;
+  const creatorHint=(rest.match(/【([^【】]{1,40}?)的作品】/)?.[1]||rest.match(/^\s*(?:\d+\.\d+\s+)?([^\s，,。！!]{1,30}?)发布了一篇小红书笔记/)?.[1]||'').trim();
+  rest=rest.replace(/【[^【】]{1,40}?的作品】/,' ');
+  if(rest.match(/^\s*(?:\d+\.\d+\s+)?[^\s，,。！!]{1,30}?发布了一篇小红书笔记/))rest=rest.replace(/^\s*(?:\d+\.\d+\s+)?[^\s，,。！!]{1,30}?(?=发布了一篇小红书笔记)/,' ');
+  for(const re of SHARE_BOILERPLATE)rest=rest.replace(re,' ');
+  const shareText=trimJunk(rest.replace(/[ \t]{2,}/g,' ').replace(/\s*\n\s*/g,'\n')).replace(/^[\s，,。；;！!]+|[\s，,；;]+$/g,'');
+  return {rawUrl,shareText,creatorHint,platform:rawUrl?capturePlatform(rawUrl):null};
 }
 
 export const capturePlatforms={
@@ -53,7 +75,7 @@ export function captureEntry(input,state,now=new Date()){
   const canonicalUrl=canonicalCaptureURL(rawUrl);
   const shareText=clip(input.rawUrl?input.shareText:shared.shareText,8000);
   const userNote=clip(input.userNote,1000);
-  const sourceTitle=clip(input.sourceTitle,180);
+  const sourceTitle=clip(input.sourceTitle,180)||clip(shared.creatorHint,180);
   if(rawUrl&&!canonicalUrl)throw new Error('请填写 http 或 https 分享链接。');
   if(!rawUrl&&!shareText)throw new Error('请粘贴分享链接或来源文字。');
   const duplicate=(state.captures||[]).find(c=>(canonicalUrl&&(c.canonicalUrl||canonicalCaptureURL(c.rawUrl))===canonicalUrl)||(!rawUrl&&shareText&&squash(c.shareText)===squash(shareText)));
