@@ -8,10 +8,44 @@ export const allowedIngestBase=value=>{
     return u.protocol==='https:'&&(host.endsWith('.workers.dev')||host.endsWith('.fcapp.run'))&&!u.username&&!u.password&&!u.port&&u.pathname==='/'?u.origin:'';
   }catch{return '';}
 };
-export const ingestConfig=state=>{
-  const x=state.settings?.ingest;
-  return x&&allowedIngestBase(x.base)&&typeof x.token==='string'&&x.token.length>=24?x:null;
+// 两条线路可以同时配置，选一条作为当前使用。数据只加不改：顶层 base / token 始终等于当前线路，
+// 旧版本 App 读到的仍是可用的配置；routes / active 是新增字段。
+export const INGEST_ROUTES={
+  aliyun:{label:'阿里云函数计算',hint:'国内直连，不需要 VPN',suffix:'.fcapp.run',defaultBase:'https://xundong-ingest-cviyggemng.cn-hangzhou.fcapp.run'},
+  cloudflare:{label:'Cloudflare',hint:'国内通常需要 VPN',suffix:'.workers.dev',defaultBase:'https://xundong-api.707094024.workers.dev'}
 };
+export const routeOfBase=base=>{const b=allowedIngestBase(base);return !b?null:Object.keys(INGEST_ROUTES).find(id=>new URL(b).hostname.endsWith(INGEST_ROUTES[id].suffix))||null;};
+const usable=(x,id)=>x&&allowedIngestBase(x.base)&&routeOfBase(x.base)===id&&typeof x.token==='string'&&x.token.length>=24?{base:allowedIngestBase(x.base),token:x.token,id}:null;
+// 每条线路当前保存的配置（没配置的为 null）。旧格式只有顶层 base / token，按地址归到对应线路。
+export function ingestRoutes(state){
+  const x=state.settings?.ingest||{},out={};
+  for(const id of Object.keys(INGEST_ROUTES))out[id]=usable(x.routes?.[id],id)||(routeOfBase(x.base)===id?usable(x,id):null);
+  const active=out[x.active]?x.active:out[routeOfBase(x.base)]?routeOfBase(x.base):Object.keys(out).find(id=>out[id])||null;
+  return {...out,active};
+}
+// 当前使用的线路；提交新任务用它。
+export const ingestConfig=state=>{const r=ingestRoutes(state);return r.active?r[r.active]:null;};
+// 指定线路（查询某个任务时用提交它的那条线路，切换线路不影响进行中的任务）。
+export const ingestConfigFor=(state,id)=>ingestRoutes(state)[id]||null;
+export const anyIngestConfigured=state=>Object.keys(INGEST_ROUTES).some(id=>ingestRoutes(state)[id]);
+// 保存设置：input={aliyun:{base,token},cloudflare:{base,token},active}；token 留空 = 保留原值，
+// 原来没有时沿用另一条线路的访问码（两条线路通常用同一个）。
+export function nextIngestSettings(state,input,now=new Date()){
+  const prev=ingestRoutes(state),routes={};
+  for(const id of Object.keys(INGEST_ROUTES)){
+    const raw=input[id]||{},baseText=String(raw.base||'').trim();
+    if(!baseText)continue;
+    const base=allowedIngestBase(baseText);
+    if(!base||routeOfBase(base)!==id)throw new Error(`${INGEST_ROUTES[id].label}的地址应为 https://…${INGEST_ROUTES[id].suffix}`);
+    const other=Object.keys(INGEST_ROUTES).find(x=>x!==id);
+    const token=String(raw.token||'').trim()||prev[id]?.token||String(input[other]?.token||'').trim()||prev[other]?.token||'';
+    if(token.length<24)throw new Error(`${INGEST_ROUTES[id].label}的个人访问码至少需要 24 位。`);
+    routes[id]={base,token,confirmedAt:now.toISOString()};
+  }
+  const active=routes[input.active]?input.active:Object.keys(routes)[0];
+  if(!active)throw new Error('至少配置一条线路。');
+  return {base:routes[active].base,token:routes[active].token,confirmedAt:now.toISOString(),active,routes};
+}
 const autoPlatforms=new Set(['douyin','xiaohongshu','bilibili']);
 export const supportedAutoCapture=capture=>autoPlatforms.has(capture?.platform)&&Boolean(capture.rawUrl);
 export const preferVideoIngest=capture=>supportedAutoCapture(capture)&&!capture?.transcript&&!(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.length);

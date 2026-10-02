@@ -8,7 +8,7 @@ import { validateSets, restDefault, isTimed, timeTarget } from './training.js';
 import { safetyBlock, textMentionsLimits } from './safety.js';
 import { abilityEntry, abilityBlock, allowedUses, buildAbilityIntakeInput, validateAbilityIntake, abilityRecords, redFlagCheck } from './abilities.js';
 import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, deleteKnowledge, capturePlatforms } from './knowledge.js';
-import { allowedIngestBase,ingestConfig,supportedAutoCapture,preferVideoIngest,submitIngest,readIngestJob,applyIngestResult } from './ingest.js';
+import { allowedIngestBase,ingestConfig,ingestConfigFor,ingestRoutes,anyIngestConfigured,nextIngestSettings,INGEST_ROUTES,supportedAutoCapture,preferVideoIngest,submitIngest,readIngestJob,applyIngestResult } from './ingest.js';
 import { exerciseLogForm,sessionEditForm,assessmentForm,abilityIntakeForm,abilityConfirmForm,methodConfirmForm,digestConfirmForm,activityFields,activityIntakeForm,selfCheckTaskForm,selfCheckSummaryForm,activityName } from './experience.js';
 import { SELF_CHECK_TASKS, selfCheckRecords } from './self-check.js';
 import { syncPersonalActivities,createPersonalActivity,updatePersonalActivity,setActivityPlanning,archivePersonalActivity,deletePersonalActivity,addToDraft,buildActivityIntakeInput,validateActivityIntake,PLANNING_USES } from './personal-activities.js';
@@ -205,8 +205,10 @@ function captureDialog(id){
   showModal(capture?'补充分享内容':'收藏一条分享',`<form id="capture-form" data-id="${esc(capture?.id||'')}"><label>分享链接<input name="rawUrl" type="url" inputmode="url" value="${esc(capture?.rawUrl||'')}" placeholder="抖音、小红书、B 站或网页链接" ${capture?'readonly':''}></label><label>作者或来源（可选）<input name="sourceTitle" maxlength="180" value="${esc(capture?.sourceTitle||'')}" placeholder="例如：谭成义"></label><label>分享文字 / 文案 / 字幕（可选）<textarea name="shareText" maxlength="8000" rows="5" placeholder="直接粘贴链接也可以。已启用云端服务的公开抖音视频会尝试自动转成文字。">${esc(capture?.shareText||'')}</textarea></label><label>我为什么想收藏（可选）<textarea name="userNote" maxlength="1000" placeholder="例如：想试试他的髋部训练思路。">${esc(capture?.userNote||'')}</textarea></label><p class="helper left">原始分享会先保存在本机。自动整理只在你配置服务后，对公开抖音视频发送链接并转写；失败也不会丢失收藏。</p><button type="submit" class="primary full">${capture?'保存补充内容':'存入收件箱'} ${icon('bookmark')}</button></form>${capture?'':'<button class="secondary full" data-action="paste-capture">从剪贴板粘贴</button>'}`);
 }
 function ingestSettingsDialog(){
-  const cfg=ingestConfig(state);
-  showModal('自动视频整理',`<p>配置后，收藏公开的抖音、小红书或 B 站视频时可自动生成待确认知识卡。链接会发送到你自己的云端服务；服务用 TikHub 取得播放信息，再交百炼读取口播、画面与字幕。小红书图文笔记只整理正文。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form"><label>云端服务地址<input name="base" type="url" inputmode="url" required value="${esc(cfg?.base||'')}" placeholder="https://…workers.dev 或 https://….fcapp.run"></label><label>个人访问码<input name="token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'至少 24 位'}" ${cfg?'':'required'}></label><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向此服务发送分享链接，并用百炼处理公开媒体内容</label><button class="primary full" type="submit">保存自动整理设置</button></form>${cfg?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">个人访问码只保存在这台设备，导出备份会移除。自动整理支持 15 分钟内的公开抖音、小红书和 B 站视频。</p>`);
+  // 两条线路都可以配置，选一条作为当前使用；进行中的任务仍在提交它的线路上查询。
+  const r=ingestRoutes(state);
+  const route=id=>{const x=INGEST_ROUTES[id],cfg=r[id];return `<fieldset class="ingest-route ${r.active===id?'active':''}"><legend><label class="checkbox-line"><input type="radio" name="active" value="${id}" ${r.active===id||(!r.active&&id==='aliyun')?'checked':''}> <strong>${x.label}</strong> <span class="small muted">· ${x.hint}</span>${r.active===id?' <span class="badge">当前使用</span>':''}</label></legend><label>服务地址<input name="${id}_base" type="url" inputmode="url" value="${esc(cfg?.base||x.defaultBase)}" placeholder="https://…${x.suffix}"></label><label>个人访问码<input name="${id}_token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'留空 = 沿用另一条线路的访问码'}"></label><button class="text-button" type="button" data-ingest-test="${id}">测试连接</button><span class="small muted" data-ingest-result="${id}">${cfg?'已配置':'尚未配置'}</span></fieldset>`;};
+  showModal('自动视频整理',`<p>配置后，收藏公开的抖音、小红书或 B 站视频时可自动生成待确认知识卡。链接会发送到你自己的云端服务；服务用 TikHub 取得播放信息，再交百炼读取口播、画面与字幕。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form">${route('aliyun')}${route('cloudflare')}<p class="helper left">两条线路可以都配置好，用上面的单选按钮选当前使用哪一条；切换后新收藏走新线路，已经在处理的视频仍在原线路上完成。只想用一条线路时，把另一条的地址清空即可。</p><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向所选服务发送分享链接，并用百炼处理公开媒体内容</label><button class="primary full" type="submit">保存自动整理设置</button></form>${r.active?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">访问码只保存在这台设备，导出备份会移除。</p>`);
 }
 async function startIngest(captureId,force=false){
   const capture=state.captures.find(c=>c.id===captureId),cfg=ingestConfig(state);
@@ -217,14 +219,15 @@ async function startIngest(captureId,force=false){
   ingestStarting.add(captureId);
   try{
     const jobId=await submitIngest(capture,cfg,{force});
-    if(commit(s=>{const c=s.captures.find(c=>c.id===captureId);c.ingestJobId=jobId;c.ingestStatus='queued';c.ingestError='';c.ingestWarning='';c.updatedAt=new Date().toISOString();const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')k.text='正在读取视频中的口播、画面与字幕。';})){
+    if(commit(s=>{const c=s.captures.find(c=>c.id===captureId);c.ingestJobId=jobId;c.ingestRoute=cfg.id;c.ingestStatus='queued';c.ingestError='';c.ingestWarning='';c.updatedAt=new Date().toISOString();const k=s.knowledge.find(k=>k.id===c.knowledgeId);if(k&&k.status==='inbox')k.text='正在读取视频中的口播、画面与字幕。';})){
       render();toast('已保存链接，正在后台解析视频内容。');
     }
   }catch(e){toast(e.message||'自动整理暂时不可用，链接已保存在收件箱。');}
   finally{ingestStarting.delete(captureId);}
 }
 async function pollIngest(captureId){
-  const c=state.captures.find(x=>x.id===captureId),cfg=ingestConfig(state);
+  // 用提交这个任务的那条线路查询；旧任务没有记录线路时用当前线路。
+  const c=state.captures.find(x=>x.id===captureId),cfg=(c?.ingestRoute&&ingestConfigFor(state,c.ingestRoute))||ingestConfig(state);
   if(!c||!cfg||!c.ingestJobId||c.ingestStatus!=='queued'||ingestPolling.has(captureId)||navigator.onLine===false)return;
   ingestPolling.add(captureId);
   let terminal=false;
@@ -492,6 +495,9 @@ document.addEventListener('click',e=>{
   if(el.dataset.archiveActivity){const id=el.dataset.archiveActivity,p=(state.personalActivities||[]).find(x=>x.id===id);if(p&&commit(s=>archivePersonalActivity(s,id,p.status!=='archived'))){render();detail(id);toast(p.status==='archived'?'已恢复。':'已归档，不再出现在动作库和安排里。');}return;}
   if(el.dataset.deleteActivity){showModal('删除这个动作？','<p>只能删除还没有被训练记录、心得、收藏或用途备注用过的动作；用过的请改为归档。</p><button class="primary" data-action="confirm-activity-delete" data-id="'+esc(el.dataset.deleteActivity)+'">删除</button>');return;}
   if(el.dataset.extractActivities){const id=el.dataset.extractActivities,capture=(state.captures||[]).find(c=>c.knowledgeId===id);if(capture)extractActivities({capture,knowledgeId:id});else toast('这条知识没有原始内容可以提取。');return;}
+  if(el.dataset.ingestTest){const id=el.dataset.ingestTest,form=$('#ingest-settings-form'),out=document.querySelector(`[data-ingest-result="${id}"]`),base=allowedIngestBase(form?.[`${id}_base`]?.value);
+    if(!base){out.textContent='地址格式不对';return;}out.textContent='正在测试…';
+    fetch(base+'/health',{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(x=>{out.textContent=x?.configured?'✓ 可以连接':x?.error==='origin_not_allowed'?'能连上，但服务只接受正式网址（yancd366.github.io）的请求':'能连上，但服务未配置完整';}).catch(()=>{out.textContent=id==='cloudflare'?'✗ 连不上（国内通常需要开 VPN）':'✗ 连不上，请检查网络或地址';});return;}
   if(el.dataset.synthesizeMethod){synthesizeMethod(el.dataset.synthesizeMethod);return;}
   if(el.dataset.deleteMethod){showModal('删除这张方法卡？','<p>只删除归纳出的方法卡，原始知识卡不受影响。</p><button class="primary" data-action="confirm-method-delete" data-id="'+esc(el.dataset.deleteMethod)+'">删除</button>');return;}
   if(el.dataset.deleteKnowledge){showModal('删除这条知识？','<p>收藏、原文和整理结果都会从这台设备移除，不能撤销。</p><button class="primary" data-action="confirm-knowledge-delete" data-id="'+esc(el.dataset.deleteKnowledge)+'">删除</button>');return;}
@@ -579,12 +585,10 @@ document.addEventListener('submit',async e=>{
       if(ok){applyDirect();$('#sheet').close();render();toast('本机直连已启用，出门也能用 AI。');return;}
     }
     if(form.id==='ingest-settings-form'){
-      if(!f.get('consent'))throw new Error('请确认分享链接会发送给此云端服务。');
-      const base=allowedIngestBase(f.get('base')),token=String(f.get('token')||'').trim()||ingestConfig(state)?.token;
-      if(!base)throw new Error('请填写 https://…workers.dev 或 https://….fcapp.run 格式的云端服务地址。');
-      if(!token||token.length<24)throw new Error('个人访问码至少需要 24 位。');
-      ok=commit(s=>s.settings.ingest={base,token,confirmedAt:new Date().toISOString()});
-      if(ok){$('#sheet').close();render();toast('自动视频整理已配置。收藏公开抖音链接时会自动尝试转写。');}return;
+      if(!f.get('consent'))throw new Error('请确认分享链接会发送给所选云端服务。');
+      const next=nextIngestSettings(state,{aliyun:{base:f.get('aliyun_base'),token:f.get('aliyun_token')},cloudflare:{base:f.get('cloudflare_base'),token:f.get('cloudflare_token')},active:f.get('active')});
+      ok=commit(s=>s.settings.ingest=next);
+      if(ok){$('#sheet').close();render();toast(`已保存。当前使用：${INGEST_ROUTES[next.active].label}${Object.keys(next.routes).length>1?'（另一条线路也已配置，可随时切换）':''}。`);}return;
     }
     if(form.id==='assessment-form')ok=commit(s=>s.assessments.push(abilityEntry(Object.fromEntries(f))));
     if(form.id==='ability-intake-form'){const rawText=String(f.get('rawText')||'').trim();if(!rawText)throw new Error('先写一点最近的情况。');$('#sheet').close();abilityIntake({rawText,source:f.get('source'),observedOn:f.get('observedOn')});return;}
@@ -723,7 +727,7 @@ document.addEventListener('submit',async e=>{
 });
 setInterval(()=>{if($('#elapsed')&&state.draft?.startedAt)$('#elapsed').textContent=elapsedText(state.draft.startedAt);if(rest){if(Date.now()>=rest.endsAt){rest=null;paintRest();}else{const t=$('#rest .rest-time');if(t)t.textContent=fmtSec(restRemain());}}
   if(timer){if(document.hidden){pauseTimer();return;}if(timer.phase==='ready'){if(Date.now()>=timer.readyEndsAt)timerToWork();else paintTimer();}else if(timer.phase==='paused')paintTimer();else if(timer.workEndsAt&&Date.now()>=timer.workEndsAt)stopTimer(true);else paintTimer();}},1000);
-setInterval(()=>{if(ingestConfig(state))for(const c of state.captures||[])if(c.ingestStatus==='queued')pollIngest(c.id);},5000);
+setInterval(()=>{if(anyIngestConfigured(state))for(const c of state.captures||[])if(c.ingestStatus==='queued')pollIngest(c.id);},5000);
 render();
 paintTimer();
 document.addEventListener('visibilitychange',()=>{if(document.hidden)pauseTimer();});
