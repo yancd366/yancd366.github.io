@@ -8,6 +8,7 @@ const uid=()=>globalThis.crypto?.randomUUID?.()||`knowledge-${Date.now()}-${Math
 const clip=(value,max)=>String(value||'').trim().slice(0,max);
 const squash=value=>String(value||'').toLowerCase().replace(/[\s，,。.;；:：、!！?？()（）\[\]【】"'“”‘’\-—_~～]/g,'');
 const date=now=>now.toISOString();
+export const MAX_KNOWLEDGE_CLAIMS=10;
 
 // 抖音 / 小红书 / B 站「复制链接」得到的是一段文字中间夹一个链接。这里取出链接，去掉平台套话和
 // 口令码，并尽量从套话里认出作者（「【某某的作品】」「某某发布了一篇小红书笔记」）。
@@ -40,6 +41,8 @@ export function splitSharedText(value){
 export const capturePlatforms={
   douyin:'抖音', xiaohongshu:'小红书', bilibili:'B 站', web:'网页', other:'其他来源'
 };
+export const CONTENT_TYPES={training_idea:'训练观点',movement_demo:'动作技巧',training_plan:'训练方案',follow_along:'跟练流程',mixed:'综合内容'};
+export const PLAN_POINT_KINDS={goal:'训练目标',schedule:'训练频率',session:'训练日安排',order:'动作顺序',dose:'训练量',progression:'进阶方式',condition:'适用条件'};
 
 export function canonicalCaptureURL(value){
   try{
@@ -82,7 +85,7 @@ export function captureEntry(input,state,now=new Date()){
   if(duplicate)throw new Error('这条分享已经在收件箱里了。');
   const id=uid(),knowledgeId=uid(),platform=capturePlatform(rawUrl);
   const capture={id,knowledgeId,capturedAt:date(now),channel:'paste',rawUrl,canonicalUrl,shareText,userNote,sourceTitle,platform,status:shareText?'captured':'needs_content',updatedAt:date(now)};
-  const knowledge={id:knowledgeId,status:'inbox',title:captureTitle(capture),text:shareText?'等待 AI 根据你提供的文字整理。':'已保存链接，待补充文案、字幕或截图中的文字。',url:rawUrl,sourceTitle:sourceTitle||capturePlatforms[platform],activityIds:[],useInPlanning:false,captureId:id,claims:[],createdAt:date(now),updatedAt:date(now)};
+  const knowledge={id:knowledgeId,status:'inbox',title:captureTitle(capture),text:shareText?'等待 AI 根据你提供的文字整理。':'已保存链接，待补充文案、字幕或截图中的文字。',url:rawUrl,sourceTitle:sourceTitle||capturePlatforms[platform],activityIds:[],useInPlanning:false,captureId:id,claims:[],contentType:null,planPoints:[],createdAt:date(now),updatedAt:date(now)};
   return {capture,knowledge};
 }
 
@@ -115,7 +118,7 @@ export function buildKnowledgeImportInput(state,capture){
     catalog:activities.map(a=>({id:a.id,name:a.name,aliases:a.aliases.slice(0,5)})),
     existingTitles:(state.knowledge||[]).filter(k=>k.captureId!==capture.id).slice(-40).map(k=>clip(k.title,120)),
     existingTopics:corpusTopics(state).slice(0,40).map(x=>x.topic),
-    limits:{maxClaims:5,maxActivityLinks:4,maxTopics:3}
+    limits:{maxClaims:MAX_KNOWLEDGE_CLAIMS,maxActivityLinks:4,maxTopics:3}
   };
 }
 
@@ -135,9 +138,9 @@ export function validateKnowledgeImport(output,capture){
   if(!card||typeof card!=='object')return {ok:false,errors:['ok 需要 card']};
   if(!clip(card.title,120))errors.push('card 需要 title');
   const claims=Array.isArray(card.claims)?card.claims:[];
-  if(!claims.length||claims.length>5)errors.push('claims 应有 1～5 条');
+  if(!claims.length||claims.length>MAX_KNOWLEDGE_CLAIMS)errors.push(`claims 应有 1～${MAX_KNOWLEDGE_CLAIMS} 条`);
   const drafts=[];
-  claims.slice(0,5).forEach((claim,n)=>{
+  claims.slice(0,MAX_KNOWLEDGE_CLAIMS).forEach((claim,n)=>{
     const at=`第 ${n+1} 条观点`,text=clip(claim?.text,500),evidenceQuote=clip(claim?.evidenceQuote,500);
     const piece=claim?.evidenceId?pieces.find(p=>p.id===claim.evidenceId&&validEvidence(evidenceQuote,p.text)):pieces.find(p=>validEvidence(evidenceQuote,p.text));
     if(!text)errors.push(`${at}需要 text`);
@@ -145,8 +148,18 @@ export function validateKnowledgeImport(output,capture){
     if(forbidden.test(text))errors.push(`${at}不能写诊断、治疗或矫正承诺`);
     if(text&&piece&&!forbidden.test(text))drafts.push({text,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
   });
-  // 关联动作是可选附加信息：核对不上的只略去并提示，不让整张卡失败；观点的逐字核对仍然严格。
-  const links=[],warnings=[];
+  // 方案结构也必须引用原始证据；无依据的附加要点略去，不污染可保存的观点。
+  const links=[],planPoints=[],warnings=[];
+  const rawPlanPoints=Array.isArray(card.planPoints)?card.planPoints:[];
+  if(rawPlanPoints.length>8)warnings.push(`方案要点最多 8 条，只保留前 8 条。`);
+  rawPlanPoints.slice(0,8).forEach((point,n)=>{
+    const kind=String(point?.kind||''),text=clip(point?.text,300),quote=clip(point?.evidenceQuote,500);
+    const piece=point?.evidenceId?pieces.find(p=>p.id===point.evidenceId&&validEvidence(quote,p.text)):pieces.find(p=>validEvidence(quote,p.text));
+    if(!PLAN_POINT_KINDS[kind]||!text||!piece||forbidden.test(text)){warnings.push(`已略去第 ${n+1} 条无法核对的方案要点。`);return;}
+    planPoints.push({kind,text,evidenceId:piece.id,evidenceQuote:quote,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
+  });
+  let contentType=CONTENT_TYPES[card.contentType]?card.contentType:null;
+  if(contentType==='training_plan'&&!planPoints.some(p=>['schedule','session','order','dose','progression'].includes(p.kind))){contentType='training_idea';warnings.push('训练方案缺少可核对的安排内容，已归为训练观点。');}
   const byId=new Map(activities.map(a=>[a.id,a]));
   const rawLinks=Array.isArray(card.activityLinks)?card.activityLinks:[];
   if(rawLinks.length>4)warnings.push(`AI 给了 ${rawLinks.length} 个关联动作，只保留前 4 个。`);
@@ -162,7 +175,7 @@ export function validateKnowledgeImport(output,capture){
     else {seen.add(activity.id);links.push({activityId:activity.id,...(normalizeUse(link)||{}),evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
   });
   if(errors.length)return {ok:false,errors};
-  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),topics:normalizeTopics(card.topics),claims:drafts,activityLinks:links},warnings};
+  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),topics:normalizeTopics(card.topics),claims:drafts,activityLinks:links,contentType,planPoints},warnings};
 }
 
 export function deleteKnowledge(state,knowledgeId){
@@ -179,7 +192,7 @@ export function applyKnowledgeCard(state,captureId,card,now=new Date()){
   if(!capture)throw new Error('找不到这条来源，请刷新后重试。');
   const knowledge=(state.knowledge||[]).find(k=>k.id===capture.knowledgeId);
   if(!knowledge)throw new Error('找不到对应的知识卡，请刷新后重试。');
-  Object.assign(knowledge,{status:'saved',title:clip(card.title,120),text:clip(card.summary,700)||card.claims.map(c=>c.text).join('；'),url:capture.rawUrl,sourceTitle:clip(capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:card.activityLinks.map(x=>x.activityId),claims:card.claims,activityLinks:card.activityLinks,topics:normalizeTopics(card.topics),sourceKind:entryKind({},capture),updatedAt:date(now)});
+  Object.assign(knowledge,{status:'saved',title:clip(card.title,120),text:clip(card.summary,700)||card.claims.map(c=>c.text).join('；'),url:capture.rawUrl,sourceTitle:clip(capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:card.activityLinks.map(x=>x.activityId),claims:card.claims,activityLinks:card.activityLinks,contentType:CONTENT_TYPES[card.contentType]?card.contentType:null,planPoints:Array.isArray(card.planPoints)?card.planPoints.slice(0,8):[],topics:normalizeTopics(card.topics),sourceKind:entryKind({},capture),updatedAt:date(now)});
   Object.assign(capture,{status:'card_created',cardDraft:null,updatedAt:date(now)});
   replaceKnowledgeUses(state,knowledge,now);
   return knowledge;

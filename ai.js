@@ -122,9 +122,13 @@ export function validateIntake(output, defaults) {
 
 // useCorpus=false 时（「参考我的知识库」关掉），知识条目、总结卡、用途备注都不发送。
 const corpusQuery = r => [goals[r.focus], (r.targetRegions || []).map(x => bodyRegions[x]?.label).join(' '), r.userText, r.preferences, r.bodyToday].filter(Boolean).join(' ');
-export function buildPlanInput(state, request, { now = new Date(), previousPlan = null, instruction = '', useCorpus = true } = {}) {
+export function buildPlanInput(state, request, { now = new Date(), previousPlan = null, instruction = '', useCorpus = true, referenceMode = null, selectedReferenceIds = null } = {}) {
   const candidates = aiCandidates(request, state.profile);
   const ids = new Set(candidates.map(a => a.id));
+  const mode = referenceMode || state.settings?.planningReferences?.mode || (useCorpus ? 'auto' : 'none');
+  const selected = selectedReferenceIds || state.settings?.planningReferences?.selectedIds || [];
+  const includeAuto = useCorpus && mode === 'auto';
+  const includeSelected = useCorpus && mode === 'selected';
   return {
     today: localDate(now),
     request: {
@@ -142,13 +146,13 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
     // 只送用户允许「温和参考」、仍有效的已确认观察；「仅保存」和已归档的不进上下文。
     abilityObservations:activeAssessments(state.assessments,now).filter(a=>a.recommendationUse==='gentle_preference').slice(-12).map(a=>({id:a.id,observedAt:a.observedAt,dimension:abilityDimensions[a.dimension]?.label||a.dimension,signal:abilitySignals[a.signal]||a.signal,bodyAreas:(a.bodyAreas||[]).map(x=>abilityAreas[x]||x),side:abilitySides[a.side]||'',context:a.context||'',note:clip(a.note,200),...(a.taskId?{relatedActivityIds:SELF_CHECK_TASKS.find(t=>t.id===a.taskId)?.prefers||[]}:{}),use:'温和参考：只影响安全候选内的排序'})),
     // 从全部长期知识里按相关性挑（与候选动作、今天要求的字面重合），只受字数预算限制。
-    personalKnowledge: useCorpus ? corpusForPlan(state, { candidateIds: [...ids], text: corpusQuery(request) }) : [],
+    personalKnowledge: includeAuto ? corpusForPlan(state, { candidateIds: [...ids], text: corpusQuery(request) }) : includeSelected ? corpusForPlan(state, { candidateIds: [...ids], text: corpusQuery(request), selectedIds: selected }) : [],
     // 选中的方法卡单独作为 methodPreference 发送，不再重复出现在总结里。
-    knowledgeSummaries: useCorpus ? summariesForPlan(state, { text: corpusQuery(request) }).filter(c => c.id !== activeMethodPreference(state)?.card.id) : [],
-    methodPreference: useCorpus ? methodPlanInput(activeMethodPreference(state), [...ids]) : null,
-    personalNotes: state.notes.filter(n => ids.has(n.activityId) && n.text.trim()).map(n => ({ activityId: n.activityId, text: clip(n.text) })),
+    knowledgeSummaries: includeAuto ? summariesForPlan(state, { text: corpusQuery(request) }).filter(c => c.id !== activeMethodPreference(state)?.card.id) : includeSelected ? summariesForPlan(state, { text: corpusQuery(request), selectedIds: selected }).filter(c => c.id !== activeMethodPreference(state)?.card.id) : [],
+    methodPreference: useCorpus && (mode === 'auto' || selected.includes(activeMethodPreference(state)?.card.id)) ? methodPlanInput(activeMethodPreference(state), [...ids]) : null,
+    personalNotes: includeAuto ? state.notes.filter(n => ids.has(n.activityId) && n.text.trim()).map(n => ({ activityId: n.activityId, text: clip(n.text) })) : [],
     // 用户确认过的动作用途（例如某动作「热身 · 髋腿」），只给本次候选里的动作。
-    activityUses: (useCorpus ? state.activityUses || [] : []).filter(u => ids.has(u.activityId)).map(u => ({ activityId: u.activityId, use: useLabel(u), note: u.note || '' })),
+    activityUses: (includeAuto ? state.activityUses || [] : []).filter(u => ids.has(u.activityId)).map(u => ({ activityId: u.activityId, use: useLabel(u), note: u.note || '' })),
     candidateColumns: CANDIDATE_COLUMNS,
     candidates: candidates.map(candidateLine),
     progressionStandards: Object.fromEntries(candidates.filter(a => a.standardsVerified && a.standards.length).map(a => [a.id, a.standards.map(x => `${x.label} ${x.value}`).join('；')])),

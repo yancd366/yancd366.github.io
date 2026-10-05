@@ -7,8 +7,9 @@ import { directConfig, directConsentId, providerHost, directMessages, callDirect
 import { validateSets, restDefault, isTimed, timeTarget } from './training.js';
 import { safetyBlock, textMentionsLimits } from './safety.js';
 import { abilityEntry, abilityBlock, allowedUses, buildAbilityIntakeInput, validateAbilityIntake, abilityRecords, redFlagCheck } from './abilities.js';
-import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, deleteKnowledge, capturePlatforms } from './knowledge.js';
-import { allowedIngestBase,ingestConfig,ingestConfigFor,ingestRoutes,anyIngestConfigured,nextIngestSettings,INGEST_ROUTES,supportedAutoCapture,preferVideoIngest,submitIngest,readIngestJob,applyIngestResult } from './ingest.js';
+import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, deleteKnowledge, capturePlatforms, CONTENT_TYPES, PLAN_POINT_KINDS } from './knowledge.js';
+import { allowedIngestBase,ingestConfig,ingestConfigFor,ingestRoutes,anyIngestConfigured,nextIngestSettings,INGEST_ROUTES,supportedAutoCapture,preferVideoIngest,submitIngest,readIngestJob,applyIngestResult,readActionFrame } from './ingest.js';
+import { saveImage,readImage } from './media-store.js';
 import { exerciseLogForm,sessionEditForm,assessmentForm,abilityIntakeForm,abilityConfirmForm,methodConfirmForm,digestConfirmForm,activityFields,activityIntakeForm,selfCheckTaskForm,selfCheckSummaryForm,activityName } from './experience.js';
 import { SELF_CHECK_TASKS, selfCheckRecords } from './self-check.js';
 import { syncPersonalActivities,createPersonalActivity,updatePersonalActivity,setActivityPlanning,archivePersonalActivity,deletePersonalActivity,addToDraft,buildActivityIntakeInput,validateActivityIntake,PLANNING_USES } from './personal-activities.js';
@@ -34,7 +35,8 @@ try {
 syncPersonalActivities(state);
 let page=routes[location.hash.slice(1)]?location.hash.slice(1):'today';
 let request=structuredClone(state.draft?.request||{minutes:20,place:'home',focus:state.profile.focus,readiness:'normal',targetRegions:[]});
-let filters={search:'',category:'all',system:'all',place:'all',personal:'all'},knowledgeFilter='all',knowledgeTopic='',knowledgeKind='',toastTimer;
+let filters={search:'',category:'all',system:'all',place:'all',personal:'all'},knowledgeFilter='all',knowledgeTopic='',knowledgeKind='',knowledgeContentType='',toastTimer;
+const mediaUrls=new Map();
 const aiState={ready:false,busy:false,mode:null,text:'',model:null,provider:'',consentId:null,paired:false,pairingRequired:false,optionsOpen:false,adjustText:''};let pendingSelfCheck=null,pendingLog=null,pendingAbility=null,pendingKnowledge=null,pendingMethod=null,pendingDigest=null,pendingSearch=null,pendingActivities=null;
 const ingestPolling=new Set(),ingestStarting=new Set();
 aiState.text=state.aiPending?.text||'';
@@ -46,20 +48,31 @@ function commit(change){
   catch{toast('保存失败：浏览器空间不足或存储不可用。请导出备份。');return false;}
 }
 function render(){
-  const content={today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind),body:()=>bodyHTML(state)}[page]();
+  const content={today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind,knowledgeContentType),body:()=>bodyHTML(state)}[page]();
   $('#app').innerHTML=shell(page,state,content,storageError);
+  if(page==='knowledge')enhanceKnowledgeFilters();
   showOfflineStatus(offlineStatus);
+  hydrateImages($('#app'));
+}
+function enhanceKnowledgeFilters(){
+  const status=$('#app [data-knowledge-filter="all"]')?.closest('.filter-pills');if(!status)return;
+  const bar=document.createElement('div');bar.className='filter-pills content-type-pills';
+  bar.innerHTML=`${[['','全部类型'],...Object.entries(CONTENT_TYPES)].map(([id,label])=>`<button class="pill ${knowledgeContentType===id?'selected':''}" data-knowledge-content="${id}">${label}</button>`).join('')}`;
+  status.insertAdjacentElement('afterend',bar);
+  const source=$('#app .kind-pills'),topic=$('#app .topic-pills');
+  if(source||topic){const more=document.createElement('details');more.className='knowledge-more-filters';more.innerHTML='<summary>来源与主题筛选</summary>';if(source)more.append(source);if(topic)more.append(topic);bar.insertAdjacentElement('afterend',more);}
 }
 function navigate(next){if($('#sheet').open)$('#sheet').close();page=next;location.hash=next;render();window.scrollTo({top:0});}
 window.addEventListener('hashchange',()=>{if(routes[location.hash.slice(1)]&&page!==location.hash.slice(1)){page=location.hash.slice(1);render();}});
-function showModal(title,html){const d=$('#sheet');d.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" data-action="close" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${html}</div>`;if(!d.open)d.showModal();}
+function hydrateImages(root=document){for(const image of root.querySelectorAll('img[data-local-image]')){const key=image.dataset.localImage;if(mediaUrls.has(`local:${key}`)){image.src=mediaUrls.get(`local:${key}`);continue;}readImage(key).then(blob=>{if(!blob||!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(`local:${key}`,url);image.src=url;}).catch(()=>{});}for(const image of root.querySelectorAll('img[data-frame-capture]')){if(image.dataset.loading==='true'||image.hasAttribute('src'))continue;const capture=state.captures.find(x=>x.id===image.dataset.frameCapture),segment=capture?.actionSegments?.find(x=>x.id===image.dataset.frameSegment);if(!capture||!segment?.thumbnail)continue;const key=`frame:${segment.thumbnail.jobId}:${segment.thumbnail.index}`;if(mediaUrls.has(key)){image.src=mediaUrls.get(key);continue;}image.dataset.loading='true';readActionFrame(capture,segment,state).then(blob=>{if(!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(key,url);image.src=url;}).catch(()=>{image.alt='动作截图暂不可用，请重新解析视频';}).finally(()=>{image.dataset.loading='false';});}}
+function showModal(title,html){const d=$('#sheet');d.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" data-action="close" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${html}</div>`;if(!d.open)d.showModal();hydrateImages(d);}
 // ---------- 我的动作 ----------
 // 个人动作的详情区：来源、是否允许自动安排、编辑 / 归档 / 删除。任何动作都可以手动加进还没开始的安排。
 function personalSectionHTML(a){
   const add=state.draft&&!state.draft.startedAt&&!state.draft.items.some(i=>i.activityId===a.id)?`<button class="secondary full" data-add-to-draft="${esc(a.id)}">${icon('plus')} 加入今天的安排</button>`:'';
   if(!a.personal)return add?`<div class="personal-activity">${add}</div>`:'';
-  const src=a.source?`<p class="small muted">来源${a.source.lowTrust?'（AI 画面描述，待核对）':''}：「${esc(a.source.quote)}」${a.source.knowledgeId&&state.knowledge.some(k=>k.id===a.source.knowledgeId)?` · 知识卡「${esc(state.knowledge.find(k=>k.id===a.source.knowledgeId).title)}」`:''}</p>`:'<p class="small muted">你自己添加的动作。</p>';
-  return `<section class="personal-activity"><div class="section-heading"><h3>我的动作</h3><span class="badge ${a.archived?'':'warm'}">${a.archived?'已归档':a.selectable?'可自动安排':'仅手动使用'}</span></div>${src}${a.parentActivityId?`<p class="small">是「<button class="text-button orange" data-detail="${esc(a.parentActivityId)}">${esc(activityById(a.parentActivityId)?.name||'')}</button>」的变式</p>`:''}${a.archived?'':`<label>安排方式<select data-activity-planning="${esc(a.id)}">${Object.entries(PLANNING_USES).map(([v,l])=>`<option value="${v}" ${a.planningUse===v?'selected':''}>${l}</option>`).join('')}</select></label><p class="helper left">「允许自动安排」后，本地规则和 AI 才会把它放进候选；场地、器械、难度和安全限制照常检查。</p>`}${add}<div class="dialog-actions"><button class="secondary" data-edit-activity="${esc(a.id)}">${icon('edit')} 编辑</button><button class="text-button" data-archive-activity="${esc(a.id)}">${a.archived?'恢复':'归档'}</button><button class="text-button" data-delete-activity="${esc(a.id)}">删除</button></div></section>`;
+  const src=a.source?`<p class="small muted">来源${a.source.lowTrust?'（AI 画面描述，待核对）':''}：「${esc(a.source.quote)}」${a.source.knowledgeId&&state.knowledge.some(k=>k.id===a.source.knowledgeId)?` · 知识卡「${esc(state.knowledge.find(k=>k.id===a.source.knowledgeId).title)}」`:''}${a.source.startMs!=null?` · 视频 ${Math.floor(a.source.startMs/60000)}:${String(Math.floor(a.source.startMs/1000)%60).padStart(2,'0')}–${Math.floor((a.source.endMs||a.source.startMs)/60000)}:${String(Math.floor((a.source.endMs||a.source.startMs)/1000)%60).padStart(2,'0')}`:''}</p>`:'<p class="small muted">你自己添加的动作。</p>';
+  return `<section class="personal-activity"><div class="section-heading"><h3>我的动作</h3><span class="badge ${a.archived?'':'warm'}">${a.archived?'已归档':a.selectable?'可自动安排':'仅手动使用'}</span></div>${a.source?.thumbnailId?`<img class="activity-detail-image" data-local-image="${esc(a.source.thumbnailId)}" alt="${esc(a.name)}动作截图">`:''}${src}${a.parentActivityId?`<p class="small">是「<button class="text-button orange" data-detail="${esc(a.parentActivityId)}">${esc(activityById(a.parentActivityId)?.name||'')}</button>」的变式</p>`:''}${a.archived?'':`<label>安排方式<select data-activity-planning="${esc(a.id)}">${Object.entries(PLANNING_USES).map(([v,l])=>`<option value="${v}" ${a.planningUse===v?'selected':''}>${l}</option>`).join('')}</select></label><p class="helper left">「允许自动安排」后，本地规则和 AI 才会把它放进候选；场地、器械、难度和安全限制照常检查。</p>`}${add}<div class="dialog-actions"><button class="secondary" data-edit-activity="${esc(a.id)}">${icon('edit')} 编辑</button><button class="text-button" data-archive-activity="${esc(a.id)}">${a.archived?'恢复':'归档'}</button><button class="text-button" data-delete-activity="${esc(a.id)}">删除</button></div></section>`;
 }
 function addActivityDialog(text=''){
   showModal('添加我的动作',`<form id="activity-describe-form"><label>用自己的话描述这个动作<textarea name="text" required maxlength="4000" rows="6" placeholder="例如：跪姿，一只手放在脑后，手肘向上打开胸口再合回来，每边 8 次，用来热胸椎。">${esc(text)}</textarea></label><p class="helper left">AI 会先对照动作库：已有的不会重复新建；没有的整理成动作草稿，你核对后才保存，默认仅手动使用。</p><button class="primary full" type="submit">让 AI 整理 ${icon('arrow')}</button></form><button class="secondary full" data-action="activity-manual">不用 AI，直接填写</button>`);
@@ -70,7 +83,7 @@ function activityFormDialog(id=''){
 }
 const readActivityFields=(f,p)=>({name:f.get(p+'name'),aliases:f.get(p+'aliases'),description:f.get(p+'description'),category:f.get(p+'category'),phase:f.get(p+'phase'),primaryRegions:f.getAll(p+'primaryRegions'),places:f.getAll(p+'places'),equipment:f.getAll(p+'equipment'),tier:f.get(p+'tier'),impact:f.get(p+'impact'),minutes:f.get(p+'minutes'),system:f.get(p+'system'),setup:f.get(p+'setup'),steps:f.get(p+'steps'),cues:f.get(p+'cues'),mistakes:f.get(p+'mistakes'),dose:f.get(p+'dose')});
 // 从收藏的视频 / 文字，或用户的描述里提取动作。
-function extractActivities({capture=null,text='',knowledgeId=null}={}){
+function extractActivities({capture=null,text='',knowledgeId=null,actionSegment=null,captureId=null}={}){
   if(!ensureAI())return;
   let input;try{input=buildActivityIntakeInput(state,{capture,text});}catch(e){toast(e.message);return;}
   toast('AI 正在对照动作库整理…');
@@ -78,8 +91,9 @@ function extractActivities({capture=null,text='',knowledgeId=null}={}){
     const r=await askAI('activity-intake',input,x=>validateActivityIntake(x,input));
     if(r.status==='empty'){showModal('没有找到具体动作',`<p>${esc(r.reason)}</p><button class="secondary full" data-action="close">知道了</button>`);return;}
     if(r.status==='clarify'){showModal('再确认一下',`<p>${esc(r.question)}</p>${capture?'':`<button class="secondary full" data-action="add-activity" data-text="${esc(text)}">补充描述</button>`}`);return;}
-    pendingActivities={...r,knowledgeId};
-    showModal('核对提取的动作',activityIntakeForm(r,id=>activityById(id)?.name||id));
+    pendingActivities={...r,knowledgeId,actionSegment,captureId};
+    const preview=actionSegment?{captureId,segmentId:actionSegment.id,thumbnail:actionSegment.thumbnail,startMs:actionSegment.startMs,endMs:actionSegment.endMs,description:actionSegment.description}:null;
+    showModal('核对提取的动作',activityIntakeForm(r,id=>activityById(id)?.name||id,preview));
   });
 }
 // 把动作挂到来源知识卡上（与 AI 整理知识卡时的关联动作同一格式）。
@@ -135,8 +149,9 @@ function aiOfflineDialog(kind){
 function clarifyDialog(question,next){showModal('再确认一下',`<p>${esc(question)}</p><form id="ai-clarify-form" data-next="${next}"><label>你的回答<textarea name="answer" required maxlength="500"></textarea></label><button class="primary full" type="submit">继续 ${icon('arrow')}</button></form>`);}
 function referDialog(reason){showModal('先照顾好身体',`<p>${esc(reason)}</p><p class="helper left">这次不自动安排训练。可以先记下现在的状态。</p><button class="primary" data-action="observation">记录当前状态</button>`);}
 // 「参考我的知识库」：关掉时知识条目、总结卡、用途备注都不参与（本地规则与 AI 一致）。
-const corpusOn=()=>state.settings?.useCorpus!==false;
-const planUses=()=>corpusOn()?state.activityUses||[]:[];
+const referenceMode=()=>state.settings?.planningReferences?.mode||(state.settings?.useCorpus===false?'none':'auto');
+const corpusOn=()=>referenceMode()!=='none';
+const planUses=()=>referenceMode()==='auto'?(state.activityUses||[]):[];
 async function planWithAI(req,extra={}){
   const input=buildPlanInput(state,req,{...extra,useCorpus:corpusOn()});
   const r=await askAI('plan',input,x=>validatePlan(x,{request:req,profile:state.profile,uses:planUses(),refs:[...input.personalKnowledge,...input.knowledgeSummaries],method:input.methodPreference}));
@@ -199,6 +214,7 @@ function finishDialog(){
 function knowledgeDialog(id){
   const k=state.knowledge.find(k=>k.id===id);
   showModal(k?'编辑收藏':'收藏一个好想法',`<form id="knowledge-form" data-id="${esc(id||'')}"><label>标题<input name="title" required maxlength="120" value="${esc(k?.title||'')}" placeholder="它在讲什么？"></label><label>来源链接<input name="url" type="url" value="${esc(k?.url||'')}" placeholder="https://…（可选）"></label><label>作者或来源<input name="sourceTitle" maxlength="180" value="${esc(k?.sourceTitle||'')}" placeholder="创作者名称、书籍或自己的思考"></label><label>摘录 / 我的想法<textarea name="text" maxlength="8000" placeholder="把值得保留的内容贴在这里，也可以写下自己的问题。">${esc(k?.text||'')}</textarea></label><label>主题（可选，用顿号或逗号分隔）<input name="topics" maxlength="80" value="${esc(normalizeTopics(k?.topics).join('、'))}" placeholder="例如：髋关节热身"></label><label class="checkbox-line"><input type="checkbox" name="useInPlanning" ${k?.useInPlanning?'checked':''}>允许推荐时参考这条个人收藏（整理入库后生效）</label><label>关联动作（可选）<select name="activityId"><option value="">暂不关联</option>${activities.map(a=>`<option value="${a.id}" ${k?.activityIds?.[0]===a.id?'selected':''}>${a.name}</option>`).join('')}</select></label><p class="helper left">保存到私人收件箱。链接不会自动抓取；你可以先保留自己的摘录。</p><button type="submit" class="primary full">保存收藏 ${icon('bookmark')}</button></form>`);
+  $('#knowledge-form [name=topics]')?.closest('label')?.insertAdjacentHTML('afterend',knowledgeTypeReviewHTML(k||{}));
 }
 function captureDialog(id){
   const capture=id?(state.captures||[]).find(c=>c.id===id):null;
@@ -219,7 +235,7 @@ function ingestSettingsDialog(){
   // 两条线路都可以配置，选一条作为当前使用；进行中的任务仍在提交它的线路上查询。
   const r=ingestRoutes(state);
   const route=id=>{const x=INGEST_ROUTES[id],cfg=r[id];return `<fieldset class="ingest-route ${r.active===id?'active':''}"><legend><label class="checkbox-line"><input type="radio" name="active" value="${id}" ${r.active===id||(!r.active&&id==='aliyun')?'checked':''}> <strong>${x.label}</strong> <span class="small muted">· ${x.hint}</span>${r.active===id?' <span class="badge">当前使用</span>':''}</label></legend><label>服务地址<input name="${id}_base" type="url" inputmode="url" value="${esc(cfg?.base||x.defaultBase)}" placeholder="https://…${x.suffix}"></label><label>个人访问码<input name="${id}_token" type="password" autocomplete="off" placeholder="${cfg?'已保存；留空表示不修改':'留空 = 沿用另一条线路的访问码'}"></label><button class="text-button" type="button" data-ingest-test="${id}">测试连接</button><span class="small muted" data-ingest-result="${id}">${cfg?'已配置':'尚未配置'}</span></fieldset>`;};
-  showModal('自动视频整理',`<p>配置后，收藏公开的抖音、小红书或 B 站视频时可自动生成待确认知识卡。链接会发送到你自己的云端服务；服务用 TikHub 取得播放信息，再交百炼读取口播、画面与字幕。原视频不会保存在本机或循动云端。</p><form id="ingest-settings-form">${route('aliyun')}${route('cloudflare')}<p class="helper left">两条线路可以都配置好，用上面的单选按钮选当前使用哪一条；切换后新收藏走新线路，已经在处理的视频仍在原线路上完成。只想用一条线路时，把另一条的地址清空即可。</p><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向所选服务发送分享链接，并用百炼处理公开媒体内容</label><button class="primary full" type="submit">保存自动整理设置</button></form>${r.active?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">访问码只保存在这台设备，导出备份会移除。</p>`);
+  showModal('自动视频整理',`<p>配置后，收藏公开的抖音、小红书或 B 站视频时可自动生成待确认知识卡。链接会发送到你自己的云端服务；服务用 TikHub 取得播放信息，再交百炼读取口播、画面与字幕。原视频不会保存在本机或循动云端。为显示动作片段截图，关键帧缩略图会在你配置的云服务中临时保存最多 48 小时；确认新动作后，压缩图保存在本机。</p><form id="ingest-settings-form">${route('aliyun')}${route('cloudflare')}<p class="helper left">两条线路可以都配置好，用上面的单选按钮选当前使用哪一条；切换后新收藏走新线路，已经在处理的视频仍在原线路上完成。只想用一条线路时，把另一条的地址清空即可。</p><label class="checkbox-line"><input name="consent" type="checkbox" required>我同意主动收藏或重试时，向所选服务发送分享链接，并用百炼处理公开媒体内容</label><button class="primary full" type="submit">保存自动整理设置</button></form>${r.active?'<button class="secondary full" data-action="clear-ingest">清除本机自动整理设置</button>':''}<p class="helper left">访问码只保存在这台设备，导出备份会移除。</p>`);
 }
 async function startIngest(captureId,force=false){
   const capture=state.captures.find(c=>c.id===captureId),cfg=ingestConfig(state);
@@ -257,12 +273,18 @@ async function pollIngest(captureId){
   }catch(e){if((terminal||Date.now()-new Date(c.updatedAt||c.capturedAt).getTime()>48*3600000)&&commit(s=>{const item=s.captures.find(x=>x.id===captureId);item.ingestStatus='failed';item.ingestError=terminal?'云端结果无法核对，请重试。':'任务已过期，请重试。';}))render();}
   finally{ingestPolling.delete(captureId);}
 }
+function knowledgeTypeReviewHTML(card){
+  const types=`<label>内容类型<select name="contentType"><option value="">未分类</option>${Object.entries(CONTENT_TYPES).map(([id,label])=>`<option value="${id}" ${card.contentType===id?'selected':''}>${label}</option>`).join('')}</select></label>`;
+  const points=(card.planPoints||[]).length?`<fieldset class="plan-point-review"><legend>视频明确说过的方案安排</legend><p class="small muted">这些是来源里的说法，不会直接当成你的个人训练计划。每条都可以取消或修改。</p>${card.planPoints.map((p,n)=>`<div class="log-item"><label class="checkbox-line"><input type="checkbox" name="planKeep_${n}" checked> 保留第 ${n+1} 条方案内容</label><label>属于哪部分<select name="planKind_${n}">${Object.entries(PLAN_POINT_KINDS).map(([id,label])=>`<option value="${id}" ${p.kind===id?'selected':''}>${label}</option>`).join('')}</select></label><label>整理后的说法<textarea name="planText_${n}" maxlength="300">${esc(p.text)}</textarea></label><p class="small muted">来源${p.startMs!=null?` · ${Math.floor(p.startMs/60000)}:${String(Math.floor(p.startMs/1000)%60).padStart(2,'0')}`:''}：「${esc(p.evidenceQuote)}」</p></div>`).join('')}</fieldset>`:'';
+  return types+points;
+}
 function knowledgeConfirmDialog(){
   const {captureId,card,warnings=[]}=pendingKnowledge;
   const capture=(state.captures||[]).find(c=>c.id===captureId);
   if(!capture)return toast('找不到这条分享，请刷新后重试。');
   const evidenceLabel=claim=>claim.evidenceSource==='workflow_model'?'AI 画面描述（待核对）':claim.evidenceKind==='asr_transcript'?'视频语音':claim.evidenceKind==='frame_ocr'?'画面字幕':claim.evidenceKind==='keyframe_description'?'画面解析':'你提供的文字';
   showModal('核对知识卡',`${warnings.length?`<div class="notice">${warnings.map(w=>`<p class="small">${esc(w)}</p>`).join('')}</div>`:''}<p class="muted">每条观点都附有视频语音、画面或字幕依据。AI 识别可能有误，请回看原视频后保存。</p><form id="knowledge-confirm-form"><label>标题<input name="title" required maxlength="120" value="${esc(card.title)}"></label><label>摘要（可选）<textarea name="summary" maxlength="700">${esc(card.summary||'')}</textarea></label>${card.claims.map((claim,n)=>`<fieldset class="log-item"><label class="checkbox-line"><input type="checkbox" name="keep_${n}" checked> 保留第 ${n+1} 条</label><label>整理后的观点<textarea name="claim_${n}" required maxlength="500">${esc(claim.text)}</textarea></label><p class="small muted">${evidenceLabel(claim)}${claim.startMs!=null?` · ${Math.floor(claim.startMs/60000)}:${String(Math.floor(claim.startMs/1000)%60).padStart(2,'0')}`:''}：「${esc(claim.evidenceQuote)}」</p></fieldset>`).join('')}<fieldset><legend>关联现有动作（可选）</legend>${card.activityLinks.map((link,n)=>`<div class="link-row"><label class="checkbox-line"><input type="checkbox" name="linkKeep_${n}" checked> <select name="link_${n}">${activities.map(a=>`<option value="${a.id}" ${a.id===link.activityId?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label><span class="small muted">原文：「${esc(link.evidenceQuote)}」</span><div class="field-row"><label>用途${link.use?'<span class="small muted">（AI 按原文建议）</span>':''}<select name="linkUse_${n}"><option value="">不记用途</option>${Object.entries(USES).map(([v,l])=>`<option value="${v}" ${link.use===v?'selected':''}>${l}</option>`).join('')}</select></label><label>部位<select name="linkRegion_${n}"><option value="">不指定</option>${Object.entries(bodyRegions).map(([v,r])=>`<option value="${v}" ${link.region===v?'selected':''}>${esc(r.label)}</option>`).join('')}</select></label></div><input type="hidden" name="linkNote_${n}" value="${esc(link.note||'')}"></div>`).join('')||'<p class="small muted">AI 没有找到可由原文核对的现有动作。</p>'}</fieldset><label>主题（可选，用顿号或逗号分隔）<input name="topics" maxlength="80" value="${esc((card.topics||[]).join('、'))}" placeholder="例如：髋关节热身、核心训练" list="topic-options"></label><datalist id="topic-options">${corpusTopics(state).map(t=>`<option value="${esc(t.topic)}">`).join('')}</datalist><label class="checkbox-line"><input type="checkbox" name="useInPlanning" ${card.claims.some(c=>c.evidenceSource==='workflow_model')?'':'checked'}>作为长期知识，安排训练时可以参考${card.claims.some(c=>c.evidenceSource==='workflow_model')?'（含 AI 画面描述，建议核对后再打开）':''}</label><p class="helper left">这张卡来自你收藏的内容，观点未经专业审核。即使允许参考，也不能绕过当天的安全、器械和时间限制。</p><button class="primary full" type="submit">保存到个人知识库 ${icon('check')}</button></form>`);
+  $('#knowledge-confirm-form .log-item')?.insertAdjacentHTML('beforebegin',knowledgeTypeReviewHTML(card));
 }
 function reviewIngestDraft(captureId){
   const capture=state.captures.find(c=>c.id===captureId);
@@ -493,6 +515,7 @@ document.addEventListener('click',e=>{
   if(el.dataset.category){filters.category=el.dataset.category;render();return;}
   if(el.dataset.system){filters.system=el.dataset.system;render();return;}
   if(el.dataset.knowledgeFilter){knowledgeFilter=el.dataset.knowledgeFilter;render();return;}
+  if(el.hasAttribute('data-knowledge-content')){knowledgeContentType=el.dataset.knowledgeContent;render();return;}
   if(el.hasAttribute('data-knowledge-kind')){knowledgeKind=el.dataset.knowledgeKind;render();return;}
   if(el.hasAttribute('data-knowledge-topic')){knowledgeTopic=el.dataset.knowledgeTopic;render();return;}
   if(el.dataset.saveSessionTemplate){templateDialog('session',el.dataset.saveSessionTemplate);return;}
@@ -506,6 +529,7 @@ document.addEventListener('click',e=>{
   if(el.dataset.archiveActivity){const id=el.dataset.archiveActivity,p=(state.personalActivities||[]).find(x=>x.id===id);if(p&&commit(s=>archivePersonalActivity(s,id,p.status!=='archived'))){render();detail(id);toast(p.status==='archived'?'已恢复。':'已归档，不再出现在动作库和安排里。');}return;}
   if(el.dataset.deleteActivity){showModal('删除这个动作？','<p>只能删除还没有被训练记录、心得、收藏或用途备注用过的动作；用过的请改为归档。</p><button class="primary" data-action="confirm-activity-delete" data-id="'+esc(el.dataset.deleteActivity)+'">删除</button>');return;}
   if(el.dataset.extractActivities){const id=el.dataset.extractActivities,capture=(state.captures||[]).find(c=>c.knowledgeId===id);if(capture)extractActivities({capture,knowledgeId:id});else toast('这条知识没有原始内容可以提取。');return;}
+  if(el.dataset.extractActionSegment){const knowledgeId=el.dataset.extractActionSegment,capture=(state.captures||[]).find(c=>c.knowledgeId===knowledgeId),segment=capture?.actionSegments?.find(x=>x.id===el.dataset.segmentId);if(!capture||!segment)return toast('找不到这个视频动作片段。');const scoped={...capture,shareText:'',transcript:null,videoEvidence:segment.evidence.map(e=>({kind:e.kind,text:e.quote,startMs:e.startMs,endMs:e.endMs,evidenceSource:e.evidenceSource||'parser'}))};extractActivities({capture:scoped,knowledgeId,actionSegment:segment,captureId:capture.id});return;}
   if(el.dataset.ingestTest){const id=el.dataset.ingestTest,form=$('#ingest-settings-form'),out=document.querySelector(`[data-ingest-result="${id}"]`),base=allowedIngestBase(form?.[`${id}_base`]?.value);
     if(!base){out.textContent='地址格式不对';return;}out.textContent='正在测试…';
     fetch(base+'/health',{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(x=>{out.textContent=x?.configured?'✓ 可以连接':x?.error==='origin_not_allowed'?'能连上，但服务只接受正式网址（yancd366.github.io）的请求':'能连上，但服务未配置完整';}).catch(()=>{out.textContent=id==='cloudflare'?'✗ 连不上（国内通常需要开 VPN）':'✗ 连不上，请检查网络或地址';});return;}
@@ -572,7 +596,7 @@ document.addEventListener('click',e=>{
     case 'export':{let data;try{data=storageError?rawBackupText(localStorage.getItem(STORE_KEY)):JSON.stringify(sanitizeForExport(state),null,2);}catch{toast('本地数据无法解析，不能生成安全的备份。请保留此页面，先不要清除浏览器数据。');break;}try{const url=URL.createObjectURL(new Blob([data||''],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`循动备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast('已导出当前浏览器的记录。');}catch{toast('当前浏览器无法读取存储，请保留此页面。');}break;}
   }
 });
-document.addEventListener('change',e=>{if(e.target.id==='method-card'||e.target.id==='method-mode'){const id=$('#method-card')?.value||null,mode=$('#method-mode')?.value||'inspiration';if(commit(s=>s.settings.methodPreference=id?{creatorProfileId:id,mode}:null)){render();toast(id?`下次 AI 安排会按「${state.creatorProfiles.find(p=>p.id===id)?.title}」· ${METHOD_MODES[mode].label}。`:'不按创作者方法安排。');}return;}if(e.target.dataset.activityPlanning){const id=e.target.dataset.activityPlanning,use=e.target.value;if(commit(s=>setActivityPlanning(s,id,use))){render();detail(id);toast(use==='allowed'?'之后的安排可以自动选到它了。':'改为仅手动使用。');}return;}if(e.target.dataset.topicPlanning){const id=e.target.dataset.topicPlanning,on=e.target.checked;if(commit(s=>setTopicPlanning(s,id,on))){render();toast(on?'这张主题总结会参与安排。':'这张主题总结不再参与安排。');}else render();return;}if(e.target.id==='use-corpus'){const on=e.target.checked;if(commit(s=>s.settings.useCorpus=on))toast(on?'安排时会参考你的知识库。':'这之后的安排不参考知识库。');return;}if(e.target.matches('[data-ai-organize-model]')){const m=ORGANIZE_MODELS.includes(e.target.value)?e.target.value:null;if(commit(s=>s.settings.aiOrganizeModel=m))toast(m?`整理类任务将使用 ${m}。`:'整理类任务改回和安排用同一个模型。');return;}if(e.target.dataset.methodPlanning){const id=e.target.dataset.methodPlanning,allowed=e.target.checked;if(commit(s=>setMethodPlanning(s,id,allowed))){render();toast(allowed?'已允许这张方法卡参与安排。':'已取消用于安排。');}else render();return;}if(e.target.dataset.abilityUse){const id=e.target.dataset.abilityUse,use=e.target.value,a=state.assessments.find(a=>a.id===id);if(a&&allowedUses(a).includes(use)&&commit(s=>s.assessments.find(a=>a.id===id).recommendationUse=use)){render();toast(use==='gentle_preference'?'已设为温和参考，会参与之后的安排。':'已更新用途。');}else render();return;}if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness')request.readiness=e.target.value;if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
+document.addEventListener('change',e=>{if(e.target.matches('[data-reference-mode]')){const mode=['auto','selected','none'].includes(e.target.value)?e.target.value:'auto';if(commit(s=>{s.settings.planningReferences={mode,selectedIds:s.settings.planningReferences?.selectedIds||[]};s.settings.useCorpus=mode!=='none';})){render();toast(mode==='auto'?'会按今天情况自动挑选资料。':mode==='selected'?'本次只参考你勾选的资料。':'这次安排不参考知识库。');}return;}if(e.target.matches('[data-reference-id]')){const id=e.target.dataset.referenceId,on=e.target.checked;if(commit(s=>{const p=s.settings.planningReferences||{mode:'auto',selectedIds:[]},ids=new Set(p.selectedIds||[]);on?ids.add(id):ids.delete(id);s.settings.planningReferences={...p,mode:'selected',selectedIds:[...ids]};s.settings.useCorpus=true;})){render();}else render();return;}if(e.target.id==='method-card'||e.target.id==='method-mode'){const id=$('#method-card')?.value||null,mode=$('#method-mode')?.value||'inspiration';if(commit(s=>s.settings.methodPreference=id?{creatorProfileId:id,mode}:null)){render();toast(id?`下次 AI 安排会按「${state.creatorProfiles.find(p=>p.id===id)?.title}」· ${METHOD_MODES[mode].label}。`:'不按创作者方法安排。');}return;}if(e.target.dataset.activityPlanning){const id=e.target.dataset.activityPlanning,use=e.target.value;if(commit(s=>setActivityPlanning(s,id,use))){render();detail(id);toast(use==='allowed'?'之后的安排可以自动选到它了。':'改为仅手动使用。');}return;}if(e.target.dataset.topicPlanning){const id=e.target.dataset.topicPlanning,on=e.target.checked;if(commit(s=>setTopicPlanning(s,id,on))){render();toast(on?'这张主题总结会参与安排。':'这张主题总结不再参与安排。');}else render();return;}if(e.target.id==='use-corpus'){const on=e.target.checked;if(commit(s=>{s.settings.useCorpus=on;s.settings.planningReferences={mode:on?'auto':'none',selectedIds:s.settings.planningReferences?.selectedIds||[]};}))toast(on?'安排时会参考你的知识库。':'这之后的安排不参考知识库。');return;}if(e.target.matches('[data-ai-organize-model]')){const m=ORGANIZE_MODELS.includes(e.target.value)?e.target.value:null;if(commit(s=>s.settings.aiOrganizeModel=m))toast(m?`整理类任务将使用 ${m}。`:'整理类任务改回和安排用同一个模型。');return;}if(e.target.dataset.methodPlanning){const id=e.target.dataset.methodPlanning,allowed=e.target.checked;if(commit(s=>setMethodPlanning(s,id,allowed))){render();toast(allowed?'已允许这张方法卡参与安排。':'已取消用于安排。');}else render();return;}if(e.target.dataset.abilityUse){const id=e.target.dataset.abilityUse,use=e.target.value,a=state.assessments.find(a=>a.id===id);if(a&&allowedUses(a).includes(use)&&commit(s=>s.assessments.find(a=>a.id===id).recommendationUse=use)){render();toast(use==='gentle_preference'?'已设为温和参考，会参与之后的安排。':'已更新用途。');}else render();return;}if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness')request.readiness=e.target.value;if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
 document.addEventListener('input',e=>{if(e.target.matches?.('#capture-form [name=shareText]'))showCaptureDetection();if(e.target.id==='ai-text')aiState.text=e.target.value;if(e.target.id==='activity-search'){const pos=e.target.selectionStart;filters.search=e.target.value;render();const input=$('#activity-search');input.focus();input.setSelectionRange(pos,pos);}});
 document.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.target,f=new FormData(form);
@@ -625,7 +649,8 @@ document.addEventListener('submit',async e=>{
       const claims=pendingKnowledge.card.claims.flatMap((claim,n)=>f.get(`keep_${n}`)?[{text:String(f.get(`claim_${n}`)||'').trim(),evidenceId:claim.evidenceId,evidenceQuote:claim.evidenceQuote}]:[]);
       if(!claims.length)throw new Error('至少保留一条有来源依据的观点。');
       const activityLinks=pendingKnowledge.card.activityLinks.flatMap((link,n)=>f.get(`linkKeep_${n}`)?[{activityId:String(f.get(`link_${n}`)||''),use:f.get(`linkUse_${n}`)||null,region:f.get(`linkRegion_${n}`)||'',note:f.get(`linkNote_${n}`)||'',evidenceId:link.evidenceId,evidenceQuote:link.evidenceQuote}]:[]);
-      const checked=validateKnowledgeImport({status:'ok',card:{title:f.get('title'),summary:f.get('summary'),topics:normalizeTopics(f.get('topics')),claims,activityLinks}},capture);
+      const planPoints=(pendingKnowledge.card.planPoints||[]).flatMap((point,n)=>f.get(`planKeep_${n}`)?[{kind:f.get(`planKind_${n}`),text:String(f.get(`planText_${n}`)||'').trim(),evidenceId:point.evidenceId,evidenceQuote:point.evidenceQuote}]:[]);
+      const checked=validateKnowledgeImport({status:'ok',card:{title:f.get('title'),summary:f.get('summary'),topics:normalizeTopics(f.get('topics')),contentType:f.get('contentType'),claims,activityLinks,planPoints}},capture);
       if(!checked.ok)throw new Error(checked.errors.slice(0,2).join('；'));
       if(checked.warnings.length)throw new Error(`${checked.warnings[0]}可以换一个动作，或取消勾选它再保存。`);
       ok=commit(s=>{const k=applyKnowledgeCard(s,pendingKnowledge.captureId,checked.card);k.useInPlanning=Boolean(f.get('useInPlanning'));});
@@ -649,7 +674,11 @@ document.addEventListener('submit',async e=>{
     }
     if(form.id==='activity-intake-form'){
       if(!pendingActivities)throw new Error('整理结果已失效，请重新提取。');
-      const {candidates,knowledgeId}=pendingActivities;let created=0,uses=0;
+      const {candidates,knowledgeId,actionSegment,captureId}=pendingActivities;let created=0,uses=0,thumbnailId=null;
+      if(actionSegment&&captureId&&candidates.some((c,n)=>f.get(`keep_${n}`)&&c.type!=='existing')){
+        const capture=state.captures.find(c=>c.id===captureId);
+        if(capture&&actionSegment.thumbnail)try{thumbnailId=await saveImage(`video-${actionSegment.thumbnail.jobId}-${actionSegment.thumbnail.index}`,await readActionFrame(capture,actionSegment,state));}catch(e){toast(`动作可以保存，但截图未能留在本机：${e.message}`);}
+      }
       ok=commit(s=>{candidates.forEach((c,n)=>{
         if(!f.get(`keep_${n}`))return;
         if(c.type==='existing'){
@@ -657,7 +686,7 @@ document.addEventListener('submit',async e=>{
           if(use){try{addManualUse(s,c.matchedActivityId,{use,region:f.get(`region_${n}`),note:f.get(`note_${n}`)},new Date(),knowledgeId?{knowledgeId,quote:c.evidenceQuote}:null);uses++;}catch{/* 已经记过同样的用途 */}}
           linkToKnowledge(s,knowledgeId,c.matchedActivityId,c.evidenceQuote);return;
         }
-        const p=createPersonalActivity(s,readActivityFields(f,`a${n}_`),{source:{knowledgeId,quote:c.evidenceQuote,lowTrust:c.lowTrust},parentActivityId:c.type==='variant'?c.matchedActivityId:null,planningUse:f.get(`allow_${n}`)?'allowed':'manual_only'});
+        const p=createPersonalActivity(s,readActivityFields(f,`a${n}_`),{source:{knowledgeId,quote:c.evidenceQuote,lowTrust:c.lowTrust,thumbnailId,sourceUrl:captureId?state.captures.find(x=>x.id===captureId)?.rawUrl:null,startMs:actionSegment?.startMs,endMs:actionSegment?.endMs},parentActivityId:c.type==='variant'?c.matchedActivityId:null,planningUse:f.get(`allow_${n}`)?'allowed':'manual_only'});
         created++;linkToKnowledge(s,knowledgeId,p.id,c.evidenceQuote);
       });});
       if(ok){pendingActivities=null;$('#sheet').close();render();toast(created||uses?`已保存${created?` ${created} 个新动作（在动作库「我的动作」里）`:''}${created&&uses?'，':''}${uses?`${uses} 条用途备注`:''}。`:'已关联到动作库里的动作。');}return;
@@ -728,7 +757,7 @@ document.addEventListener('submit',async e=>{
     }
     if(form.id==='knowledge-form'){
       const url=f.get('url').trim();if(url&&!safeURL(url))throw new Error('请填写 http 或 https 链接。');if(!f.get('title').trim())throw new Error('请填写收藏标题。');
-      ok=commit(s=>{const existing=s.knowledge.find(k=>k.id===form.dataset.id);const k={useInPlanning:Boolean(f.get('useInPlanning')),title:f.get('title').trim(),url,text:f.get('text').trim(),sourceTitle:f.get('sourceTitle').trim(),activityIds:f.get('activityId')?[f.get('activityId')]:[],topics:normalizeTopics(f.get('topics')),updatedAt:new Date().toISOString()};if(existing)Object.assign(existing,k);else s.knowledge.push({...k,id:uid(),status:'inbox',sourceKind:'self',createdAt:new Date().toISOString()});});
+      ok=commit(s=>{const existing=s.knowledge.find(k=>k.id===form.dataset.id);const planPoints=(existing?.planPoints||[]).flatMap((p,n)=>f.get(`planKeep_${n}`)?[{...p,kind:f.get(`planKind_${n}`),text:String(f.get(`planText_${n}`)||'').trim()}]:[]).filter(p=>p.text);const k={useInPlanning:Boolean(f.get('useInPlanning')),title:f.get('title').trim(),url,text:f.get('text').trim(),sourceTitle:f.get('sourceTitle').trim(),activityIds:f.get('activityId')?[f.get('activityId')]:[],topics:normalizeTopics(f.get('topics')),contentType:CONTENT_TYPES[f.get('contentType')]?f.get('contentType'):null,planPoints,updatedAt:new Date().toISOString()};if(existing)Object.assign(existing,k);else s.knowledge.push({...k,id:uid(),status:'inbox',sourceKind:'self',createdAt:new Date().toISOString()});});
     }
     if(form.id==='observation-form'){if(!f.get('text').trim())throw new Error('写一点当前感受再保存。');ok=commit(s=>s.observations.push({id:uid(),text:f.get('text').trim(),source:'self_report',createdAt:new Date().toISOString()}));}
     if(form.id==='session-form'){const existing=state.sessions.find(s=>s.id===form.dataset.id);const validated=finishSession({...existing.planSnapshot,items:existing.items},{actualMinutes:f.get('actualMinutes'),effort:f.get('effort'),feedback:f.get('feedback')});const edits=existing.items.map(i=>{const parsed=parseSetsText(f.get('sets_'+i.id));return {id:i.id,feedback:String(f.get('note_'+i.id)||'').trim(),...setSummary(parsed.map((x,n)=>({...x,loadBasis:i.actualSetDetails?.[n]?.loadBasis||'unknown',feeling:i.actualSetDetails?.[n]?.feeling||''})))};});ok=commit(s=>{const x=s.sessions.find(s=>s.id===form.dataset.id);x.editHistory=[...(x.editHistory||[]),{editedAt:new Date().toISOString(),actualMinutes:x.actualMinutes,effort:x.effort,feedback:x.feedback,items:structuredClone(x.items)}];Object.assign(x,{actualMinutes:validated.actualMinutes,effort:validated.effort,feedback:validated.feedback,updatedAt:new Date().toISOString()});for(const edit of edits)Object.assign(x.items.find(i=>i.id===edit.id),edit);});}

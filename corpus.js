@@ -33,8 +33,8 @@ export function corpusEntries(state) {
   const caps = new Map((state.captures || []).map(c => [c.id, c]));
   return (state.knowledge || []).filter(k => k.status === 'saved').map(k => {
     const capture = caps.get(k.captureId), kind = entryKind(k, capture);
-    return { id: k.id, title: k.title, summary: k.text, kind, trust: entryTrust(k, kind), topics: normalizeTopics(k.topics), book: capture?.book || k.book || null,
-      claims: (k.claims || []).map(c => ({ text: c.text, quote: c.evidenceQuote || '' })), activityIds: k.activityIds || [],
+    return { id: k.id, title: k.title, summary: k.text, kind, trust: entryTrust(k, kind), topics: normalizeTopics(k.topics), book: capture?.book || k.book || null, contentType:k.contentType||null,
+      claims: (k.claims || []).map(c => ({ text: c.text, quote: c.evidenceQuote || '' })), planPoints:(k.planPoints||[]).map(p=>({kind:p.kind,text:p.text,quote:p.evidenceQuote||''})), activityIds: k.activityIds || [],
       source: { name: k.sourceTitle || '', url: k.url || '' }, allowed: k.useInPlanning === true, updatedAt: k.updatedAt || k.createdAt || '' };
   }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
@@ -58,33 +58,36 @@ export function storageUsage(state) {
 const squash = s => String(s || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
 const grams = s => { const t = squash(s), out = new Set(); for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2)); return out; };
 const overlap = (a, b) => { let n = 0; for (const g of a) if (b.has(g)) n++; return n; };
-const entryText = e => [e.title, e.topics.join(' '), e.summary, ...e.claims.map(c => c.text)].join(' ');
+const entryText = e => [e.title, e.topics.join(' '), e.summary, ...e.claims.map(c => c.text),...e.planPoints.map(p=>p.text)].join(' ');
 function pack(rows, budget, shape) {
   const out = []; let used = 0;
   for (const r of rows) { const x = shape(r), size = JSON.stringify(x).length; if (used + size > budget) continue; out.push(x); used += size; }
   return out;
 }
-const planShape = (e, ids) => ({ id: e.id, title: clip(e.title, 120), kind: SOURCE_KINDS[e.kind], ...(lowTrust(e.trust) ? { trust: TRUST_LEVELS[e.trust] } : {}), topics: e.topics,
-  points: e.claims.length ? e.claims.map(c => clip(c.text, 200)) : [clip(e.summary, 300)], activityIds: e.activityIds.filter(id => ids.has(id)) });
+const planShape = (e, ids, want) => ({ id: e.id, title: clip(e.title, 120), kind: SOURCE_KINDS[e.kind], contentType:e.contentType, ...(lowTrust(e.trust) ? { trust: TRUST_LEVELS[e.trust] } : {}), topics: e.topics,
+  points: e.claims.length ? [...e.claims].sort((a,b)=>overlap(grams(b.text),want)-overlap(grams(a.text),want)).slice(0,5).map(c => clip(c.text, 200)) : [clip(e.summary, 300)],
+  ...(e.planPoints.length?{planPoints:[...e.planPoints].sort((a,b)=>overlap(grams(b.text),want)-overlap(grams(a.text),want)).slice(0,5).map(p=>({kind:p.kind,text:clip(p.text,200)}))}:{}),activityIds: e.activityIds.filter(id => ids.has(id)) });
 
 // 安排训练用：只看用户允许参考的条目。
-export function corpusForPlan(state, { candidateIds = [], text = '', budget = 6000 } = {}) {
+export function corpusForPlan(state, { candidateIds = [], text = '', budget = 6000, selectedIds = null } = {}) {
   const ids = new Set(candidateIds), want = grams(text);
-  const scored = corpusEntries(state).filter(e => e.allowed).map(e => {
+  const selected = selectedIds == null ? null : new Set(selectedIds);
+  const scored = corpusEntries(state).filter(e => selected ? selected.has(e.id) : e.allowed).map(e => {
     const hits = e.activityIds.filter(id => ids.has(id)).length;
     const ov = overlap(grams(entryText(e)), want);
     // 至少两处字面重合才算相关，避免偶然撞上一个字对就把无关内容发出去。
     return { e, score: hits * 4 + (ov >= 2 ? Math.min(ov, 6) : 0) };
-  }).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
-  return pack(scored.map(x => x.e), budget, e => planShape(e, ids));
+  }).filter(x => selected || x.score > 0).sort((a, b) => selected ? 0 : b.score - a.score);
+  return pack(scored.map(x => x.e), budget, e => planShape(e, ids, want));
 }
 // 总结类卡片（创作者方法卡、主题总结卡）：用户打开「用于安排」的才给安排用。
 const summaryCards = (state, forPlan) => [
   ...(state.creatorProfiles || []).filter(p => p.status === 'saved' && (!forPlan || p.allowedInPlanning)).map(p => ({ id: p.id, type: '方法卡', title: p.title, by: p.creatorName, principles: p.principles })),
   ...(state.topicCards || []).filter(p => p.status === 'saved' && (!forPlan || p.allowedInPlanning !== false)).map(p => ({ id: p.id, type: '主题总结', title: p.title, by: p.topic, principles: p.principles }))];
-export function summariesForPlan(state, { text = '', budget = 2500 } = {}) {
+export function summariesForPlan(state, { text = '', budget = 2500, selectedIds = null } = {}) {
   const want = grams(text);
-  const rows = summaryCards(state, true).map(c => ({ c, score: overlap(grams([c.title, c.by, ...c.principles.map(p => p.text)].join(' ')), want) })).sort((a, b) => b.score - a.score);
+  const selected = selectedIds == null ? null : new Set(selectedIds);
+  const rows = summaryCards(state, selected == null).filter(c=>selected==null||selected.has(c.id)).map(c => ({ c, score: overlap(grams([c.title, c.by, ...c.principles.map(p => p.text)].join(' ')), want) })).sort((a, b) => selected ? 0 : b.score - a.score);
   return pack(rows.map(x => x.c), budget, c => ({ id: c.id, type: c.type, title: clip(c.title, 120), by: c.by, principles: c.principles.map(p => clip(p.text, 200)) }));
 }
 
@@ -94,7 +97,7 @@ export function buildKnowledgeAskInput(state, question, { budget = 10000, now = 
   const rows = corpusEntries(state).map(e => ({ e, score: overlap(grams(entryText(e)), want) }));
   const hit = rows.filter(x => x.score > 0).sort((a, b) => b.score - a.score).map(x => x.e);
   const entries = pack(hit, budget * 0.75, e => ({ id: e.id, title: clip(e.title, 120), kind: SOURCE_KINDS[e.kind], ...(lowTrust(e.trust) ? { trust: TRUST_LEVELS[e.trust] } : {}), source: e.source.name, topics: e.topics,
-    points: e.claims.length ? e.claims.map(c => ({ text: clip(c.text, 300), quote: clip(c.quote, 300) })) : [{ text: clip(e.summary, 500), quote: '' }] }));
+    points: e.claims.length||e.planPoints.length ? [...e.claims,...e.planPoints].map(c => ({ text: clip(c.text, 300), quote: clip(c.quote, 300) })) : [{ text: clip(e.summary, 500), quote: '' }] }));
   const sums = summaryCards(state, false).map(c => ({ c, score: overlap(grams([c.title, c.by, ...c.principles.map(p => p.text)].join(' ')), want) })).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
   const summaries = pack(sums.map(x => x.c), budget * 0.25, c => ({ id: c.id, type: c.type, title: clip(c.title, 120), by: c.by, principles: c.principles.map(p => ({ text: clip(p.text, 300), quotes: (p.sources || []).map(s => clip(s.quote, 200)) })) }));
   return { today: now.toISOString().slice(0, 10), question: q, entries, summaries, totalEntries: corpusEntries(state).length, limits: { maxPoints: 6, maxSourcesPerPoint: 3 } };
