@@ -1,6 +1,6 @@
 // 个人知识语料：所有已确认的知识条目（视频、粘贴文字、书、AI 搜索、自己的想法）统一成一种视图。
 // 旧条目不改写：来源类型和可信级别从已有字段推出来；新条目在保存时写入 sourceKind / topics。纯函数。
-export const SOURCE_KINDS = { video: '视频', text: '分享文字', book: '书', web_search: 'AI 搜索', self: '自己的想法' };
+export const SOURCE_KINDS = { video: '视频', image_post: '图文', text: '分享文字', book: '书', web_search: 'AI 搜索', self: '自己的想法' };
 // 由高到低。后两级界面必须标「待核对」，默认不参与安排。
 export const TRUST_LEVELS = { user_provided: '你提供的原文', parser: '平台字幕 / 语音转写', workflow_model: 'AI 画面描述（待核对）', ai_search: 'AI 搜索摘要（待核对）' };
 const TRUST_ORDER = ['user_provided', 'parser', 'workflow_model', 'ai_search'];
@@ -18,6 +18,7 @@ export function entryKind(k, capture) {
   if (SOURCE_KINDS[k?.sourceKind]) return k.sourceKind;
   if (!capture) return 'self';
   if (capture.book) return 'book';
+  if (capture.imageEvidence?.length) return 'image_post';
   if (VIDEO_PLATFORMS.has(capture.platform) && (capture.transcript?.text || capture.videoEvidence?.length || !capture.shareText)) return 'video';
   return 'text';
 }

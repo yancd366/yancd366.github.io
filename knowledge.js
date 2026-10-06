@@ -1,5 +1,5 @@
 // Personal social captures and knowledge cards. Captures preserve exactly what the user shared;
-// AI can only propose a card from capture.shareText and every claim must point back to it.
+// AI can only propose claims from captured text/transcripts or explicitly marked, low-trust visual observations.
 import { activities } from './catalog.js';
 import { normalizeTopics, entryKind, corpusTopics } from './corpus.js';
 import { normalizeUse, replaceKnowledgeUses, dropKnowledgeUses } from './activity-uses.js';
@@ -84,12 +84,12 @@ export function captureEntry(input,state,now=new Date()){
   const duplicate=(state.captures||[]).find(c=>(canonicalUrl&&(c.canonicalUrl||canonicalCaptureURL(c.rawUrl))===canonicalUrl)||(!rawUrl&&shareText&&squash(c.shareText)===squash(shareText)));
   if(duplicate)throw new Error('这条分享已经在收件箱里了。');
   const id=uid(),knowledgeId=uid(),platform=capturePlatform(rawUrl);
-  const capture={id,knowledgeId,capturedAt:date(now),channel:'paste',rawUrl,canonicalUrl,shareText,userNote,sourceTitle,platform,status:shareText?'captured':'needs_content',updatedAt:date(now)};
+  const capture={id,knowledgeId,capturedAt:date(now),channel:'paste',rawUrl,canonicalUrl,shareText,userNote,sourceTitle,platform,status:shareText?'captured':'needs_content',imageEvidence:[],updatedAt:date(now)};
   const knowledge={id:knowledgeId,status:'inbox',title:captureTitle(capture),text:shareText?'等待 AI 根据你提供的文字整理。':'已保存链接，待补充文案、字幕或截图中的文字。',url:rawUrl,sourceTitle:sourceTitle||capturePlatforms[platform],activityIds:[],useInPlanning:false,captureId:id,claims:[],contentType:null,planPoints:[],createdAt:date(now),updatedAt:date(now)};
   return {capture,knowledge};
 }
 
-export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.transcript?.text,1)||(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.some(x=>clip(x?.text,1))));
+export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.transcript?.text,1)||(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.some(x=>clip(x?.text,1)))||(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.some(x=>clip(x?.text,1))));
 export const captureForKnowledge=(state,id)=> (state.captures||[]).find(c=>c.knowledgeId===id)||null;
 
 export function captureEvidence(capture){
@@ -106,6 +106,10 @@ export function captureEvidence(capture){
     const kind=String(item?.kind||'');
     const text=clip(item?.text,1000),startMs=Number(item?.startMs),endMs=Number(item?.endMs);
     if(visualKinds.has(kind)&&text&&Number.isFinite(startMs)&&startMs>=0&&Number.isFinite(endMs)&&endMs>=startMs)pieces.push({id:`vision:${n}`,kind,text,startMs:Math.round(startMs),endMs:Math.round(endMs),evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser'});
+  });
+  if(Array.isArray(capture?.imageEvidence))capture.imageEvidence.slice(0,12).forEach((item,n)=>{
+    const imageIndex=Number(item?.imageIndex),text=clip(item?.text,1200);
+    if(Number.isInteger(imageIndex)&&imageIndex>=0&&imageIndex<12&&text)pieces.push({id:`image:${imageIndex}`,kind:'image_description',text,imageIndex,evidenceSource:'workflow_model'});
   });
   return pieces;
 }
@@ -146,7 +150,7 @@ export function validateKnowledgeImport(output,capture){
     if(!text)errors.push(`${at}需要 text`);
     if(!piece)errors.push(`${at} evidenceQuote 必须逐字摘自对应来源文字`);
     if(forbidden.test(text))errors.push(`${at}不能写诊断、治疗或矫正承诺`);
-    if(text&&piece&&!forbidden.test(text))drafts.push({text,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
+    if(text&&piece&&!forbidden.test(text))drafts.push({text,evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.imageIndex!=null?{imageIndex:piece.imageIndex}:{}),...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
   });
   // 方案结构也必须引用原始证据；无依据的附加要点略去，不污染可保存的观点。
   const links=[],planPoints=[],warnings=[];
@@ -156,7 +160,7 @@ export function validateKnowledgeImport(output,capture){
     const kind=String(point?.kind||''),text=clip(point?.text,300),quote=clip(point?.evidenceQuote,500);
     const piece=point?.evidenceId?pieces.find(p=>p.id===point.evidenceId&&validEvidence(quote,p.text)):pieces.find(p=>validEvidence(quote,p.text));
     if(!PLAN_POINT_KINDS[kind]||!text||!piece||forbidden.test(text)){warnings.push(`已略去第 ${n+1} 条无法核对的方案要点。`);return;}
-    planPoints.push({kind,text,evidenceId:piece.id,evidenceQuote:quote,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
+    planPoints.push({kind,text,evidenceId:piece.id,evidenceQuote:quote,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.imageIndex!=null?{imageIndex:piece.imageIndex}:{}),...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});
   });
   let contentType=CONTENT_TYPES[card.contentType]?card.contentType:null;
   if(contentType==='training_plan'&&!planPoints.some(p=>['schedule','session','order','dose','progression'].includes(p.kind))){contentType='training_idea';warnings.push('训练方案缺少可核对的安排内容，已归为训练观点。');}
@@ -172,7 +176,7 @@ export function validateKnowledgeImport(output,capture){
     else if(seen.has(activity.id))skip('重复');
     else if(!piece)skip('缺少原文引证');
     else if(!activityMatchesEvidence(activity,evidenceQuote))skip('原文里找不到这个动作的名称或别名');
-    else {seen.add(activity.id);links.push({activityId:activity.id,...(normalizeUse(link)||{}),evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
+    else {seen.add(activity.id);links.push({activityId:activity.id,...(normalizeUse(link)||{}),evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.imageIndex!=null?{imageIndex:piece.imageIndex}:{}),...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
   });
   if(errors.length)return {ok:false,errors};
   return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),topics:normalizeTopics(card.topics),claims:drafts,activityLinks:links,contentType,planPoints},warnings};

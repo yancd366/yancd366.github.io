@@ -48,7 +48,7 @@ export function nextIngestSettings(state,input,now=new Date()){
 }
 const autoPlatforms=new Set(['douyin','xiaohongshu','bilibili']);
 export const supportedAutoCapture=capture=>autoPlatforms.has(capture?.platform)&&Boolean(capture.rawUrl);
-export const preferVideoIngest=capture=>supportedAutoCapture(capture)&&!capture?.transcript&&!(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.length);
+export const preferVideoIngest=capture=>supportedAutoCapture(capture)&&!capture?.transcript&&!(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.length)&&!(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.length);
 
 async function api(path,config,{method='GET',body,fetchImpl=fetch,timeoutMs=18000}={}){
   const base=allowedIngestBase(config?.base);
@@ -87,12 +87,19 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
   }else if(result.status==='complete'){
     const hasTranscript=Boolean(result.transcript&&typeof result.transcript.text==='string'&&result.transcript.text.trim());
     const videoEvidence=Array.isArray(result.videoEvidence)?result.videoEvidence.slice(0,80).map((item,n)=>({id:`vision:${n}`,kind:['asr_transcript','keyframe_description','frame_ocr'].includes(String(item?.kind||''))?String(item.kind):'',text:String(item?.text||'').trim().slice(0,1000),startMs:Number(item?.startMs),endMs:Number(item?.endMs),evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser'})).filter(item=>item.kind&&item.text&&Number.isFinite(item.startMs)&&item.startMs>=0&&Number.isFinite(item.endMs)&&item.endMs>=item.startMs):[];
-    if(!hasTranscript&&!videoEvidence.length&&!String(capture.shareText||'').trim())throw new Error('云端没有返回可核对的语音、画面或笔记正文。');
+    const imageEvidence=Array.isArray(result.imageEvidence)?result.imageEvidence.slice(0,12).flatMap(item=>{
+      const imageIndex=Number(item?.imageIndex),text=String(item?.text||'').trim().slice(0,1200),ref=item?.thumbnail;
+      if(!Number.isInteger(imageIndex)||imageIndex<0||imageIndex>=12||!text)return [];
+      const thumbnail=ref&&/^[a-f0-9-]{36}$/i.test(ref.jobId||'')&&ref.index===imageIndex?{jobId:ref.jobId,index:imageIndex}:null;
+      return [{id:`image:${imageIndex}`,imageIndex,text,observation:String(item.observation||'').trim().slice(0,700),visibleText:String(item.visibleText||'').trim().slice(0,500),confidence:['high','medium','low'].includes(item.confidence)?item.confidence:'low',evidenceSource:'workflow_model',thumbnail}];
+    }):[];
+    if(!hasTranscript&&!videoEvidence.length&&!imageEvidence.length&&!String(capture.shareText||'').trim())throw new Error('云端没有返回可核对的语音、画面、图集或笔记正文。');
     capture.ingestStatus='transcribed';capture.ingestError='';
     capture.lastIngestAttempt={id:String(result.diagnostics?.attemptId||capture.ingestJobId||'').slice(0,80),pipelineVersion:String(result.diagnostics?.pipelineVersion||'').slice(0,80),stage:'complete',reason:'',updatedAt:result.updatedAt||now.toISOString()};
     capture.resolvedSource={provider:String(result.source?.provider||'').slice(0,40),platform:String(result.source?.platform||'').slice(0,40),contentId:String(result.source?.contentId||'').slice(0,100),title:String(result.source?.title||'').slice(0,180),creatorName:String(result.source?.creatorName||'').slice(0,120),description:String(result.source?.description||'').slice(0,2000),durationMs:Number(result.source?.durationMs)||null,retrievedAt:result.source?.retrievedAt||now.toISOString()};
     if(hasTranscript)capture.transcript={source:'asr',model:String(result.transcript.model||'').slice(0,100),text:result.transcript.text.trim().slice(0,30000),segments:Array.isArray(result.transcript.segments)?result.transcript.segments.slice(0,150).map(s=>({startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs),text:String(s.text||'').slice(0,1000)})):[],createdAt:result.transcript.createdAt||now.toISOString()};
     if(videoEvidence.length)capture.videoEvidence=videoEvidence;
+    if(imageEvidence.length)capture.imageEvidence=imageEvidence;
     const actionSegments=Array.isArray(result.actionSegments)?result.actionSegments.slice(0,10).flatMap((item,n)=>{
       const startMs=Number(item?.startMs),endMs=Number(item?.endMs),frameStartMs=Number(item?.frame?.startMs),ref=item?.thumbnail;
       if(!Number.isFinite(startMs)||startMs<0||!Number.isFinite(endMs)||endMs<startMs)return [];
@@ -104,6 +111,7 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     capture.actionSegments=actionSegments;
     const visualProvider=['bailian_video_workflow','bailian_video_url'].includes(result.analysis?.provider);
     capture.videoAnalysis=visualProvider?{provider:result.analysis.provider,evidenceTrust:result.analysis?.evidenceTrust||'parser',model:String(result.analysis?.model||'').slice(0,80),modelTokenUsage:result.analysis?.modelTokenUsage&&typeof result.analysis.modelTokenUsage==='object'?{input:Number(result.analysis.modelTokenUsage.prompt_tokens)||0,output:Number(result.analysis.modelTokenUsage.completion_tokens)||0}:null,createdAt:now.toISOString()}:null;
+    capture.imageAnalysis=result.analysis?.provider==='douyin_image_post'?{provider:'douyin_image_post',evidenceTrust:'workflow_model',model:String(result.analysis?.model||'').slice(0,80),imagesAnalyzed:imageEvidence.length,createdAt:now.toISOString()}:null;
     const checked=result.cardDraft?validateKnowledgeImport({status:'ok',card:result.cardDraft},capture):null;
     capture.cardDraft=checked?.ok?checked.card:null;
     capture.ingestWarning=String(result.workflowWarning||(!capture.cardDraft?result.cardError||'逐字稿已保存，知识卡可在 App 内重新整理。':'')).slice(0,500);
@@ -111,8 +119,8 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     if(knowledge&&knowledge.status==='inbox'){
       knowledge.title=capture.resolvedSource.title||knowledge.title;
       knowledge.sourceTitle=capture.resolvedSource.creatorName||knowledge.sourceTitle;
-      const noteOnly=result.analysis?.provider==='note_text';
-      knowledge.text=capture.cardDraft?(noteOnly?'笔记正文已整理成知识卡草稿，等待你核对。':'视频已解析，知识卡草稿等待你核对。'):hasTranscript?'视频已转成文字，可再次尝试整理知识卡。':noteOnly?'笔记正文已保存，可整理成知识卡。':'视频画面已解析，可再次尝试整理知识卡。';
+      const noteOnly=result.analysis?.provider==='note_text',imageOnly=result.analysis?.provider==='douyin_image_post';
+      knowledge.text=capture.cardDraft?(imageOnly?'抖音图文已分析，知识卡草稿等待你核对。':noteOnly?'笔记正文已整理成知识卡草稿，等待你核对。':'视频已解析，知识卡草稿等待你核对。'):imageOnly?'图集已完成 AI 画面观察，可再次尝试整理知识卡。':hasTranscript?'视频已转成文字，可再次尝试整理知识卡。':noteOnly?'笔记正文已保存，可整理成知识卡。':'视频画面已解析，可再次尝试整理知识卡。';
       knowledge.updatedAt=now.toISOString();
     }
   }
@@ -129,5 +137,17 @@ export async function readActionFrame(capture,segment,state,{fetchImpl=fetch}={}
   if(!response.ok)throw new Error(response.status===404?'动作截图已过期，请重新解析这条视频。':'读取动作截图失败。');
   const blob=await response.blob();
   if(!['image/jpeg','image/png','image/webp'].includes(blob.type)||blob.size>2_000_000)throw new Error('动作截图格式或大小无效。');
+  return blob;
+}
+
+export async function readImageEvidence(capture,image,state,{fetchImpl=fetch}={}){
+  const ref=image?.thumbnail,config=capture?.ingestRoute&&ingestConfigFor(state,capture.ingestRoute);
+  if(!ref||!config)throw new Error('图文预览已过期或自动整理线路未配置。');
+  let response;
+  try{response=await fetchImpl(`${config.base}/v1/jobs/${ref.jobId}/images/${ref.index}`,{headers:{Authorization:`Bearer ${config.token}`},signal:AbortSignal.timeout(15000)});}
+  catch{throw new Error('暂时无法读取图文预览。');}
+  if(!response.ok)throw new Error(response.status===404?'图文预览已过期，请从原图文打开查看。':'读取图文预览失败。');
+  const blob=await response.blob();
+  if(!['image/jpeg','image/png','image/webp'].includes(blob.type)||blob.size>1_200_000)throw new Error('图文预览格式或大小无效。');
   return blob;
 }

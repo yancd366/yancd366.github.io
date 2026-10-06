@@ -30,7 +30,17 @@ export function normalizeStore(data){
   }
   for(const n of s.notes){if(!known.has(n.activityId)||typeof n.text!=='string')throw new Error('心得格式无效。');n.history=n.history||[];array(n.history,'心得历史');}
   for(const k of s.knowledge){if(typeof k.title!=='string'||typeof k.text!=='string'||!Array.isArray(k.activityIds)||k.activityIds.some(x=>!known.has(x)))throw new Error('知识条目格式无效。');if(k.contentType!=null&&typeof k.contentType!=='string')throw new Error('知识内容分类无效。');if(k.planPoints!=null){array(k.planPoints,'训练方案要点');for(const p of k.planPoints)if(typeof p?.kind!=='string'||typeof p?.text!=='string'||typeof p?.evidenceQuote!=='string')throw new Error('训练方案要点格式无效。');}k.contentType ||= null;k.planPoints ||= [];}
-  for(const c of s.captures||[])if(typeof c.knowledgeId!=='string'||typeof c.shareText!=='string'||typeof c.rawUrl!=='string'||typeof c.status!=='string')throw new Error('分享收件箱格式无效。');
+  for(const c of s.captures||[]){
+    if(typeof c.knowledgeId!=='string'||typeof c.shareText!=='string'||typeof c.rawUrl!=='string'||typeof c.status!=='string')throw new Error('分享收件箱格式无效。');
+    c.imageEvidence ||= [];
+    if(!Array.isArray(c.imageEvidence)||c.imageEvidence.length>12)throw new Error('图文识别记录格式无效。');
+    const imageIndexes=new Set();
+    for(const image of c.imageEvidence){
+      if(!Number.isInteger(image?.imageIndex)||image.imageIndex<0||image.imageIndex>=12||imageIndexes.has(image.imageIndex)||typeof image.text!=='string'||image.text.length>1200)throw new Error('图文识别记录格式无效。');
+      imageIndexes.add(image.imageIndex);
+      if(image.thumbnail&&(!/^[a-f0-9-]{36}$/i.test(image.thumbnail.jobId||'')||image.thumbnail.index!==image.imageIndex))throw new Error('图文预览引用无效。');
+    }
+  }
   {const seen=new Set();for(const p of s.creatorProfiles||[]){if(!id(p?.id)||seen.has(p.id))throw new Error('方法卡 ID 无效或重复。');seen.add(p.id);if(typeof p.creatorKey!=='string'||typeof p.title!=='string'||!Array.isArray(p.principles)||(p.activityIds||[]).some(x=>!known.has(x)))throw new Error('方法卡格式无效。');}}
   {const seen=new Set();for(const t of s.savedPlans||[]){if(!id(t?.id)||seen.has(t.id))throw new Error('收藏训练 ID 无效或重复。');seen.add(t.id);if(typeof t.name!=='string'||!Array.isArray(t.items)||!t.request||!goals[t.request.focus])throw new Error('收藏训练格式无效。');}}
   {const seen=new Set();for(const u of s.activityUses||[]){if(!id(u?.id)||seen.has(u.id))throw new Error('用途备注 ID 无效或重复。');seen.add(u.id);if(typeof u.activityId!=='string'||typeof u.use!=='string')throw new Error('用途备注格式无效。');}}
