@@ -101,7 +101,7 @@ export function captureEvidence(capture){
     if(segments.length)segments.slice(0,150).forEach((s,n)=>pieces.push({id:`asr:${n}`,kind:'asr_transcript',text:clip(s.text,1000),startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs)}));
     else pieces.push({id:'asr:full',kind:'asr_transcript',text:clip(transcript.text,30000),startMs:null,endMs:null});
   }
-  const visualKinds=new Set(['asr_transcript','keyframe_description','frame_ocr']);
+  const visualKinds=new Set(['asr_transcript','keyframe_description','frame_ocr','omni_audio_video_summary']);
   if(Array.isArray(capture?.videoEvidence))capture.videoEvidence.slice(0,80).forEach((item,n)=>{
     const kind=String(item?.kind||'');
     const text=clip(item?.text,1000),startMs=Number(item?.startMs),endMs=Number(item?.endMs);

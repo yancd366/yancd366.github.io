@@ -11,8 +11,8 @@ export const allowedIngestBase=value=>{
 // 两条线路可以同时配置，选一条作为当前使用。数据只加不改：顶层 base / token 始终等于当前线路，
 // 旧版本 App 读到的仍是可用的配置；routes / active 是新增字段。
 export const INGEST_ROUTES={
-  aliyun:{label:'阿里云函数计算',hint:'国内直连，不需要 VPN',suffix:'.fcapp.run',defaultBase:'https://xundong-ingest-cviyggemng.cn-hangzhou.fcapp.run'},
-  cloudflare:{label:'Cloudflare',hint:'国内通常需要 VPN',suffix:'.workers.dev',defaultBase:'https://xundong-api.707094024.workers.dev'}
+  aliyun:{label:'阿里云函数计算',hint:'国内直连；长视频 Omni 音画理解',suffix:'.fcapp.run',defaultBase:'https://xundong-ingest-cviyggemng.cn-hangzhou.fcapp.run'},
+  cloudflare:{label:'Cloudflare',hint:'国内通常需要 VPN；15 分钟以上请用 FC',suffix:'.workers.dev',defaultBase:'https://xundong-api.707094024.workers.dev'}
 };
 export const routeOfBase=base=>{const b=allowedIngestBase(base);return !b?null:Object.keys(INGEST_ROUTES).find(id=>new URL(b).hostname.endsWith(INGEST_ROUTES[id].suffix))||null;};
 const usable=(x,id)=>x&&allowedIngestBase(x.base)&&routeOfBase(x.base)===id&&typeof x.token==='string'&&x.token.length>=24?{base:allowedIngestBase(x.base),token:x.token,id}:null;
@@ -86,7 +86,7 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     if(knowledge&&knowledge.status==='inbox')knowledge.text='暂时无法自动整理这条视频；原始链接已保留。';
   }else if(result.status==='complete'){
     const hasTranscript=Boolean(result.transcript&&typeof result.transcript.text==='string'&&result.transcript.text.trim());
-    const videoEvidence=Array.isArray(result.videoEvidence)?result.videoEvidence.slice(0,80).map((item,n)=>({id:`vision:${n}`,kind:['asr_transcript','keyframe_description','frame_ocr'].includes(String(item?.kind||''))?String(item.kind):'',text:String(item?.text||'').trim().slice(0,1000),startMs:Number(item?.startMs),endMs:Number(item?.endMs),evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser'})).filter(item=>item.kind&&item.text&&Number.isFinite(item.startMs)&&item.startMs>=0&&Number.isFinite(item.endMs)&&item.endMs>=item.startMs):[];
+    const videoEvidence=Array.isArray(result.videoEvidence)?result.videoEvidence.slice(0,80).map((item,n)=>({id:`vision:${n}`,kind:['asr_transcript','keyframe_description','frame_ocr','omni_audio_video_summary'].includes(String(item?.kind||''))?String(item.kind):'',text:String(item?.text||'').trim().slice(0,1000),startMs:Number(item?.startMs),endMs:Number(item?.endMs),evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser'})).filter(item=>item.kind&&item.text&&Number.isFinite(item.startMs)&&item.startMs>=0&&Number.isFinite(item.endMs)&&item.endMs>=item.startMs):[];
     const imageEvidence=Array.isArray(result.imageEvidence)?result.imageEvidence.slice(0,12).flatMap(item=>{
       const imageIndex=Number(item?.imageIndex),text=String(item?.text||'').trim().slice(0,1200),ref=item?.thumbnail;
       if(!Number.isInteger(imageIndex)||imageIndex<0||imageIndex>=12||!text)return [];
@@ -109,7 +109,7 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
       return [{id:`seg-${n+1}`,startMs,endMs,name:String(item.name||'').slice(0,80),description:String(item.description||'').slice(0,500),instruction:String(item.instruction||'').slice(0,500),needsReview:item.needsReview!==false,uncertainty:String(item.uncertainty||'').slice(0,240),evidence,frame:Number.isFinite(frameStartMs)?{startMs:frameStartMs,endMs:Number(item.frame.endMs)||frameStartMs,text:String(item.frame.text||'').slice(0,500)}:null,thumbnail}];
     }):[];
     capture.actionSegments=actionSegments;
-    const visualProvider=['bailian_video_workflow','bailian_video_url'].includes(result.analysis?.provider);
+    const visualProvider=['bailian_video_workflow','bailian_video_url','bailian_omni_video_url'].includes(result.analysis?.provider);
     capture.videoAnalysis=visualProvider?{provider:result.analysis.provider,evidenceTrust:result.analysis?.evidenceTrust||'parser',model:String(result.analysis?.model||'').slice(0,80),modelTokenUsage:result.analysis?.modelTokenUsage&&typeof result.analysis.modelTokenUsage==='object'?{input:Number(result.analysis.modelTokenUsage.prompt_tokens)||0,output:Number(result.analysis.modelTokenUsage.completion_tokens)||0}:null,createdAt:now.toISOString()}:null;
     capture.imageAnalysis=result.analysis?.provider==='douyin_image_post'?{provider:'douyin_image_post',evidenceTrust:'workflow_model',model:String(result.analysis?.model||'').slice(0,80),imagesAnalyzed:imageEvidence.length,createdAt:now.toISOString()}:null;
     const checked=result.cardDraft?validateKnowledgeImport({status:'ok',card:result.cardDraft},capture):null;
