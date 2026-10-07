@@ -5,6 +5,7 @@ import * as convict from './library/convict.js';
 import * as isometric from './library/isometric.js';
 import * as boxing from './library/boxing.js';
 import * as mobility from './library/mobility.js';
+import * as functional from './library/functional.js';
 export const goals = { balanced: '综合活动', strength: '力量', mobility: '活动度', coordination: '协调与平衡', cardio: '心肺', recovery: '放松' };
 export const places = { home: '居家', office: '办公室', gym: '健身房' };
 export const equipmentLabels = {
@@ -29,7 +30,7 @@ export const bodyRegions = {
   neck: { label:'颈部', detail:'需明确基础与适用动作', common:false }
 };
 export const regionLabel = ids => ids.map(id=>bodyRegions[id]?.label).filter(Boolean).join('、');
-const modules = [core, gym, bodyweight, convict, isometric, boxing, mobility];
+const modules = [core, gym, bodyweight, convict, isometric, boxing, mobility, functional];
 export const sources = Object.assign({}, ...modules.map(m => m.sources));
 // The doses are illustrative time boxes, not individualized exercise prescriptions.
 // Every candidate needs per-exercise editorial/clinical review before public release.

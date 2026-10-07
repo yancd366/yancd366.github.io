@@ -72,12 +72,13 @@ const planShape = (e, ids, want) => ({ id: e.id, title: clip(e.title, 120), kind
 // 安排训练用：只看用户允许参考的条目。
 export function corpusForPlan(state, { candidateIds = [], text = '', budget = 6000, selectedIds = null } = {}) {
   const ids = new Set(candidateIds), want = grams(text);
+  const literalTerms=String(text||'').split(/[\s、,，;；]+/).map(squash).filter(x=>x.length>=2);
   const selected = selectedIds == null ? null : new Set(selectedIds);
   const scored = corpusEntries(state).filter(e => selected ? selected.has(e.id) : e.allowed).map(e => {
     const hits = e.activityIds.filter(id => ids.has(id)).length;
-    const ov = overlap(grams(entryText(e)), want);
-    // 至少两处字面重合才算相关，避免偶然撞上一个字对就把无关内容发出去。
-    return { e, score: hits * 4 + (ov >= 2 ? Math.min(ov, 6) : 0) };
+    const text=entryText(e),ov = overlap(grams(text), want),literalHit=literalTerms.some(term=>squash(text).includes(term));
+    // 多个字对可累计；单独一个完整的多字目标词（如「背部」）也足以匹配明确标注的资料。
+    return { e, score: hits * 4 + Math.max(ov >= 2 ? Math.min(ov, 6) : 0,literalHit?2:0) };
   }).filter(x => selected || x.score > 0).sort((a, b) => selected ? 0 : b.score - a.score);
   return pack(scored.map(x => x.e), budget, e => planShape(e, ids, want));
 }

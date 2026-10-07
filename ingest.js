@@ -57,7 +57,7 @@ async function api(path,config,{method='GET',body,fetchImpl=fetch,timeoutMs=1800
   try{response=await fetchImpl(base+path,{method,headers:{Authorization:`Bearer ${config.token}`,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(timeoutMs)});}
   catch{throw new Error('暂时连不上自动整理服务；分享链接已经保存在本机。');}
   const data=await response.json().catch(()=>({}));
-  if(!response.ok)throw new Error(data.message||`自动整理服务返回 ${response.status}。`);
+  if(!response.ok){const error=new Error(data.message||`自动整理服务返回 ${response.status}。`);error.code=String(data.error||data.code||'');throw error;}
   return data;
 }
 

@@ -32,6 +32,8 @@ export function normalizeStore(data){
   for(const k of s.knowledge){if(typeof k.title!=='string'||typeof k.text!=='string'||!Array.isArray(k.activityIds)||k.activityIds.some(x=>!known.has(x)))throw new Error('知识条目格式无效。');if(k.contentType!=null&&typeof k.contentType!=='string')throw new Error('知识内容分类无效。');if(k.planPoints!=null){array(k.planPoints,'训练方案要点');for(const p of k.planPoints)if(typeof p?.kind!=='string'||typeof p?.text!=='string'||typeof p?.evidenceQuote!=='string')throw new Error('训练方案要点格式无效。');}k.contentType ||= null;k.planPoints ||= [];}
   for(const c of s.captures||[]){
     if(typeof c.knowledgeId!=='string'||typeof c.shareText!=='string'||typeof c.rawUrl!=='string'||typeof c.status!=='string')throw new Error('分享收件箱格式无效。');
+    if(c.manualSummary!=null&&(typeof c.manualSummary!=='string'||c.manualSummary.length>2000))throw new Error('个人视频总结格式无效。');
+    if(c.manualContentType!=null&&typeof c.manualContentType!=='string')throw new Error('个人视频总结分类无效。');
     c.imageEvidence ||= [];
     if(!Array.isArray(c.imageEvidence)||c.imageEvidence.length>12)throw new Error('图文识别记录格式无效。');
     const imageIndexes=new Set();

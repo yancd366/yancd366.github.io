@@ -89,12 +89,13 @@ export function captureEntry(input,state,now=new Date()){
   return {capture,knowledge};
 }
 
-export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.transcript?.text,1)||(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.some(x=>clip(x?.text,1)))||(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.some(x=>clip(x?.text,1))));
+export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.manualSummary,1)||clip(capture?.transcript?.text,1)||(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.some(x=>clip(x?.text,1)))||(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.some(x=>clip(x?.text,1))));
 export const captureForKnowledge=(state,id)=> (state.captures||[]).find(c=>c.knowledgeId===id)||null;
 
 export function captureEvidence(capture){
   const pieces=[];
   if(capture?.shareText?.trim())pieces.push({id:'user-text',kind:'user_text',text:clip(capture.shareText,8000)});
+  if(capture?.manualSummary?.trim())pieces.push({id:'user-summary',kind:'user_summary',text:clip(capture.manualSummary,2000),evidenceSource:'user_provided'});
   const transcript=capture?.transcript;
   if(transcript?.text?.trim()){
     const segments=Array.isArray(transcript.segments)?transcript.segments.filter(s=>s?.text?.trim()):[];
@@ -199,5 +200,23 @@ export function applyKnowledgeCard(state,captureId,card,now=new Date()){
   Object.assign(knowledge,{status:'saved',title:clip(card.title,120),text:clip(card.summary,700)||card.claims.map(c=>c.text).join('；'),url:capture.rawUrl,sourceTitle:clip(capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:card.activityLinks.map(x=>x.activityId),claims:card.claims,activityLinks:card.activityLinks,contentType:CONTENT_TYPES[card.contentType]?card.contentType:null,planPoints:Array.isArray(card.planPoints)?card.planPoints.slice(0,8):[],topics:normalizeTopics(card.topics),sourceKind:entryKind({},capture),updatedAt:date(now)});
   Object.assign(capture,{status:'card_created',cardDraft:null,updatedAt:date(now)});
   replaceKnowledgeUses(state,knowledge,now);
+  return knowledge;
+}
+
+// 超过自动处理时长的视频仍可由用户亲自描述；保留原始链接并明确标记这段内容来自用户总结。
+export function saveManualVideoSummary(state,captureId,input,now=new Date()){
+  const capture=(state.captures||[]).find(c=>c.id===captureId);
+  if(!capture||!capture.rawUrl)throw new Error('找不到这条视频来源。');
+  if(!['douyin','xiaohongshu','bilibili'].includes(capture.platform))throw new Error('这条来源不是受支持平台的视频。');
+  const summary=clip(input.summary,2000),title=clip(input.title,120)||clip(capture.resolvedSource?.title||capture.sourceTitle,120)||'我的视频总结';
+  const contentType=CONTENT_TYPES[input.contentType]?input.contentType:'mixed';
+  if(summary.length<8)throw new Error('请至少写 8 个字，说明视频内容或你想记住什么。');
+  const knowledge=(state.knowledge||[]).find(k=>k.id===capture.knowledgeId);
+  if(!knowledge)throw new Error('找不到这条视频对应的知识卡。');
+  capture.manualSummary=summary;
+  capture.manualContentType=contentType;
+  capture.status='card_created';
+  capture.updatedAt=date(now);
+  Object.assign(knowledge,{status:'saved',title,text:summary,url:capture.rawUrl,sourceTitle:clip(capture.resolvedSource?.creatorName||capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:knowledge.activityIds||[],activityLinks:knowledge.activityLinks||[],claims:[],contentType,planPoints:[],topics:normalizeTopics(input.topics),sourceKind:'video',useInPlanning:Boolean(input.useInPlanning),manualSummary:true,updatedAt:date(now)});
   return knowledge;
 }

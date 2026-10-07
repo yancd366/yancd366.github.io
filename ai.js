@@ -121,7 +121,8 @@ export function validateIntake(output, defaults) {
 // ---------- skill: plan ----------
 
 // useCorpus=false 时（「参考我的知识库」关掉），知识条目、总结卡、用途备注都不发送。
-const corpusQuery = r => [goals[r.focus], (r.targetRegions || []).map(x => bodyRegions[x]?.label).join(' '), r.userText, r.preferences, r.bodyToday].filter(Boolean).join(' ');
+const REGION_SEARCH_TERMS={chest:'胸部 胸肌',back:'背部 背肌 背阔肌 上背',shoulders:'肩部 肩膀',arms:'手臂 上臂 前臂',core:'核心 腹部',hips_legs:'臀腿 臀部 腿部 大腿',forearms_wrists:'前臂 手腕 握力',calves_ankles:'小腿 足踝 脚踝 足部',neck:'颈部 脖子'};
+const corpusQuery = r => [goals[r.focus], (r.targetRegions || []).flatMap(x=>[bodyRegions[x]?.label,REGION_SEARCH_TERMS[x]||'']).filter(Boolean).join(' '), r.userText, r.preferences, r.bodyToday].filter(Boolean).join(' ');
 export function buildPlanInput(state, request, { now = new Date(), previousPlan = null, instruction = '', useCorpus = true, referenceMode = null, selectedReferenceIds = null } = {}) {
   const candidates = aiCandidates(request, state.profile);
   const ids = new Set(candidates.map(a => a.id));
@@ -210,7 +211,7 @@ export function validatePlan(output, { request, profile, now = new Date(), uses 
       reason: clip(i.reason, 200), ...(roles.get(i) ? { role: roles.get(i) } : {}), status: 'pending', actualMinutes: null, feedback: '', actualSets: null, actualReps: null, actualLoadKg: null, actualSetDetails: null })),
     // Same accounting as rule plans: a small transition reserve, the rest stays visible as unused time.
     plannedMinutes: planned, transitionMinutes: Math.min(request.minutes - planned, Math.max(0, items.length - 1)), unallocatedMinutes: request.minutes - planned - Math.min(request.minutes - planned, Math.max(0, items.length - 1)),
-    knowledgeUsed: (Array.isArray(output.knowledgeUsed) ? output.knowledgeUsed : []).map(id => refs.find(r => r.id === id)).filter((r, n, all) => r && all.indexOf(r) === n).slice(0, 6).map(r => ({ id: r.id, title: r.title, type: r.type || r.kind || '知识' })),
+    knowledgeUsed: (Array.isArray(output.knowledgeUsed) ? output.knowledgeUsed : []).map(id => refs.find(r => r.id === id)).filter((r, n, all) => r && all.indexOf(r) === n).slice(0, 6).map(r => ({ id: r.id, title: r.title, type: r.type || r.kind || '知识', ...(r.sourceUrl?{url:r.sourceUrl}:{}) })),
     explanation: clip(output.explanation, 400), cautions: (Array.isArray(output.cautions) ? output.cautions : []).filter(c => typeof c === 'string').map(c => clip(c, 200)).slice(0, 5),
     regionCoverage,
     ...(method ? { methodPreference: { id: method.id, title: method.title, mode: method.mode, modeLabel: method.modeLabel }, methodReport: methodCheck.report } : {})
