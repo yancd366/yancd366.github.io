@@ -6,6 +6,7 @@ import * as isometric from './library/isometric.js';
 import * as boxing from './library/boxing.js';
 import * as mobility from './library/mobility.js';
 import * as functional from './library/functional.js';
+import * as footHandRope from './library/foot-hand-rope.js';
 export const goals = { balanced: '综合活动', strength: '力量', mobility: '活动度', coordination: '协调与平衡', cardio: '心肺', recovery: '放松' };
 export const places = { home: '居家', office: '办公室', gym: '健身房' };
 export const equipmentLabels = {
@@ -30,7 +31,7 @@ export const bodyRegions = {
   neck: { label:'颈部', detail:'需明确基础与适用动作', common:false }
 };
 export const regionLabel = ids => ids.map(id=>bodyRegions[id]?.label).filter(Boolean).join('、');
-const modules = [core, gym, bodyweight, convict, isometric, boxing, mobility, functional];
+const modules = [core, gym, bodyweight, convict, isometric, boxing, mobility, functional, footHandRope];
 export const sources = Object.assign({}, ...modules.map(m => m.sources));
 // The doses are illustrative time boxes, not individualized exercise prescriptions.
 // Every candidate needs per-exercise editorial/clinical review before public release.
@@ -40,7 +41,7 @@ const BASIC_BODYWEIGHT = { 'cc-squat-5': { tier: 1, difficulty: '入门 · 徒�
 export const activities = modules.flatMap(m => m.activities).map(a=>{
   if(BASIC_BODYWEIGHT[a.id])a={...a,...BASIC_BODYWEIGHT[a.id]};
   const guarded=!BASIC_BODYWEIGHT[a.id]&&(a.familyId==='cc-hspu'||(a.familyId==='cc-bridge'&&a.level>=3)||a.id==='cc-squat-1'||a.tier===3||(a.system==='convict'&&a.level>3));
-  return {...a,canonicalId:a.id==='cc-pushup-1'?'wallpush':a.id,
+  return {...a,canonicalId:a.canonicalId||(a.id==='cc-pushup-1'?'wallpush':a.id),
     requiresGuidance:guarded, ...(guarded?{selectable:false,tier:3,difficulty:'需先评估或指导'}:{}),
     standardsVerified:false};
 });

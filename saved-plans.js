@@ -2,7 +2,7 @@
 // 载入时用当前的档案、器械和今天的状态重新过安全 / 场地 / 器械检查，不合适的动作略去并说明。纯函数。
 import { activityById, goals, places, regionLabel } from './catalog.js';
 import { uid, aiEligible } from './domain.js';
-import { safetyBlock, safetyContext } from './safety.js';
+import { safetyBlock, safetyContext, painConstraintMessage } from './safety.js';
 
 const byId = { get: activityById, has: id => Boolean(activityById(id)) };
 const clip = (value, max) => String(value || '').trim().slice(0, max);
@@ -42,9 +42,9 @@ export function deleteTemplate(state, id) { find(state, id); state.savedPlans = 
 export function markTemplateUsed(state, id, now = new Date()) { const t = (state.savedPlans || []).find(x => x.id === id); if (t) { t.useCount = (t.useCount || 0) + 1; t.lastUsedAt = date(now); } return t || null; }
 
 // 载入成今天的安排。readiness 用今天的选择；返回 {blocked, reason} 或 {plan, skipped}。
-export function loadTemplate(state, id, { readiness = 'normal' } = {}, now = new Date()) {
+export function loadTemplate(state, id, { readiness = 'normal',userText='',bodyToday='' } = {}, now = new Date()) {
   const t = find(state, id), profile = state.profile;
-  const request = { ...cleanRequest(t.request), readiness };
+  const request = { ...cleanRequest(t.request), readiness,userText,bodyToday };
   const block = safetyBlock(profile, request);
   if (block) return { blocked: true, reason: block };
   const skipped = [], kept = [];
@@ -55,6 +55,7 @@ export function loadTemplate(state, id, { readiness = 'normal' } = {}, now = new
     else kept.push({ i, a });
   }
   if (!kept.length) return { blocked: true, reason: `「${t.name}」里的动作今天都不适合：${skipped.map(x => `${x.name}（${x.reason}）`).join('；')}。` };
+  if(request.focus==='strength'&&request.targetRegions.length&&!kept.some(({a})=>a.category==='strength'&&a.primaryRegions.some(id=>request.targetRegions.includes(id))))return {blocked:true,reason:'排除今天不适合的动作后，收藏中没有符合所选部位的力量动作；请换训练重点，不会用热身代替。'};
   const planned = kept.reduce((n, x) => n + x.i.plannedMinutes, 0), minutes = Math.max(t.request.minutes, planned);
   const transition = Math.min(minutes - planned, Math.max(0, kept.length - 1));
   return { skipped, plan: {
@@ -63,5 +64,5 @@ export function loadTemplate(state, id, { readiness = 'normal' } = {}, now = new
       reason: i.reason, status: 'pending', actualMinutes: null, feedback: '', actualSets: null, actualReps: null, actualLoadKg: null, actualSetDetails: null })),
     plannedMinutes: planned, transitionMinutes: transition, unallocatedMinutes: minutes - planned - transition,
     explanation: `来自你收藏的「${t.name}」。${skipped.length ? `今天略去了 ${skipped.map(x => x.name).join('、')}（${skipped[0].reason}）。` : ''}重量请按最近的记录重新选择。`,
-    cautions: [], regionCoverage: [] } };
+    cautions: painConstraintMessage(profile,request)?[painConstraintMessage(profile,request)]:[], regionCoverage: [] } };
 }

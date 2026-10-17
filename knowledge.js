@@ -89,7 +89,7 @@ export function captureEntry(input,state,now=new Date()){
   return {capture,knowledge};
 }
 
-export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.manualSummary,1)||clip(capture?.transcript?.text,1)||(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.some(x=>clip(x?.text,1)))||(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.some(x=>clip(x?.text,1))));
+export const captureHasEvidence=capture=>Boolean(clip(capture?.shareText,1)||clip(capture?.manualSummary,1)||clip(capture?.transcript?.text,1)||(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.some(x=>clip(x?.text,1)))||(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.some(x=>clip(x?.text,1)))||(Array.isArray(capture?.liveVideoEvidence)&&capture.liveVideoEvidence.some(x=>x?.status==='analyzed'&&clip(x?.text,1))));
 export const captureForKnowledge=(state,id)=> (state.captures||[]).find(c=>c.knowledgeId===id)||null;
 
 export function captureEvidence(capture){
@@ -112,13 +112,19 @@ export function captureEvidence(capture){
     const imageIndex=Number(item?.imageIndex),text=clip(item?.text,1200);
     if(Number.isInteger(imageIndex)&&imageIndex>=0&&imageIndex<12&&text)pieces.push({id:`image:${imageIndex}`,kind:'image_description',text,imageIndex,evidenceSource:'workflow_model'});
   });
+  if(Array.isArray(capture?.liveVideoEvidence))capture.liveVideoEvidence.slice(0,12).forEach(item=>{
+    const imageIndex=Number(item?.imageIndex),text=clip(item?.text,1000);
+    if(item?.status==='analyzed'&&Number.isInteger(imageIndex)&&imageIndex>=0&&imageIndex<12&&text)pieces.push({id:`live-video:${imageIndex}`,kind:'live_video_description',text,imageIndex,evidenceSource:'workflow_model'});
+  });
   return pieces;
 }
 
 export function buildKnowledgeImportInput(state,capture){
   return {
     ...(capture.book?{book:capture.book}:{}),
-    source:{platform:capture.book?'书':capturePlatforms[capture.platform]||capture.platform, url:capture.rawUrl||null, creator:clip(capture.resolvedSource?.creatorName||capture.sourceTitle,180)||null, shareText:clip(capture.shareText,8000), userIntent:clip(capture.userNote,1000)||null, metadata:{title:clip(capture.resolvedSource?.title,180)||null,description:clip(capture.resolvedSource?.description,2000)||null}},
+    // Resolved titles/captions remain in the capture for display. They are not
+    // evidence, so do not tempt a model to cite them instead of actual observations.
+    source:{platform:capture.book?'书':capturePlatforms[capture.platform]||capture.platform, url:capture.rawUrl||null, creator:clip(capture.resolvedSource?.creatorName||capture.sourceTitle,180)||null, shareText:clip(capture.shareText,8000), userIntent:clip(capture.userNote,1000)||null, metadata:{title:null,description:null}},
     evidence:captureEvidence(capture),
     catalog:activities.map(a=>({id:a.id,name:a.name,aliases:a.aliases.slice(0,5)})),
     existingTitles:(state.knowledge||[]).filter(k=>k.captureId!==capture.id).slice(-40).map(k=>clip(k.title,120)),

@@ -48,7 +48,7 @@ export function nextIngestSettings(state,input,now=new Date()){
 }
 const autoPlatforms=new Set(['douyin','xiaohongshu','bilibili']);
 export const supportedAutoCapture=capture=>autoPlatforms.has(capture?.platform)&&Boolean(capture.rawUrl);
-export const preferVideoIngest=capture=>supportedAutoCapture(capture)&&!capture?.transcript&&!(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.length)&&!(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.length);
+export const preferVideoIngest=capture=>supportedAutoCapture(capture)&&!capture?.transcript&&!(Array.isArray(capture?.videoEvidence)&&capture.videoEvidence.length)&&!(Array.isArray(capture?.imageEvidence)&&capture.imageEvidence.length)&&!(capture?.liveVideoEvidence||[]).some(x=>x.status==='analyzed'&&x.text);
 
 async function api(path,config,{method='GET',body,fetchImpl=fetch,timeoutMs=18000}={}){
   const base=allowedIngestBase(config?.base);
@@ -80,26 +80,36 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
   if(!capture)throw new Error('找不到原始分享。');
   if(typeof result.noteText==='string'&&result.noteText.trim()&&!String(capture.shareText||'').trim())capture.shareText=result.noteText.trim().slice(0,8000);
   if(result.status==='failed'){
-    capture.ingestStatus='failed';capture.ingestError=String(result.message||'暂时无法自动整理。').slice(0,1000);capture.ingestWarning='';capture.cardDraft=null;capture.videoEvidence=[];capture.actionSegments=[];
+    capture.ingestStatus='failed';capture.ingestError=String(result.message||'暂时无法自动整理。').slice(0,1000);capture.ingestWarning='';capture.cardDraft=null;capture.videoEvidence=[];capture.imageEvidence=[];capture.liveVideoEvidence=[];capture.actionSegments=[];
     capture.lastIngestAttempt={id:String(result.diagnostics?.attemptId||capture.ingestJobId||'').slice(0,80),pipelineVersion:String(result.diagnostics?.pipelineVersion||'').slice(0,80),stage:String(result.stage||'failed').slice(0,40),reason:String(result.reason||'').slice(0,80),updatedAt:result.updatedAt||now.toISOString()};
     const knowledge=state.knowledge.find(k=>k.id===capture.knowledgeId);
     if(knowledge&&knowledge.status==='inbox')knowledge.text='暂时无法自动整理这条视频；原始链接已保留。';
   }else if(result.status==='complete'){
     const hasTranscript=Boolean(result.transcript&&typeof result.transcript.text==='string'&&result.transcript.text.trim());
-    const videoEvidence=Array.isArray(result.videoEvidence)?result.videoEvidence.slice(0,80).map((item,n)=>({id:`vision:${n}`,kind:['asr_transcript','keyframe_description','frame_ocr','omni_audio_video_summary'].includes(String(item?.kind||''))?String(item.kind):'',text:String(item?.text||'').trim().slice(0,1000),startMs:Number(item?.startMs),endMs:Number(item?.endMs),evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser'})).filter(item=>item.kind&&item.text&&Number.isFinite(item.startMs)&&item.startMs>=0&&Number.isFinite(item.endMs)&&item.endMs>=item.startMs):[];
+    const videoEvidence=Array.isArray(result.videoEvidence)?result.videoEvidence.slice(0,80).map((item,n)=>{const ref=item?.thumbnail,startMs=Number(item?.startMs),endMs=Number(item?.endMs);return {id:`vision:${n}`,kind:['asr_transcript','keyframe_description','frame_ocr','omni_audio_video_summary'].includes(String(item?.kind||''))?String(item.kind):'',text:String(item?.text||'').trim().slice(0,1000),startMs,endMs,evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser',...(ref&&/^[a-f0-9-]{36}$/i.test(ref.jobId||'')&&ref.index===n?{thumbnail:{jobId:ref.jobId,index:n}}:{}),...(Number.isFinite(Number(item?.frameAtMs))?{frameAtMs:Number(item.frameAtMs)}:{}),...(typeof item?.frameStatus==='string'?{frameStatus:item.frameStatus.slice(0,40)}:{})};}).filter(item=>item.kind&&item.text&&Number.isFinite(item.startMs)&&item.startMs>=0&&Number.isFinite(item.endMs)&&item.endMs>=item.startMs):[];
     const imageEvidence=Array.isArray(result.imageEvidence)?result.imageEvidence.slice(0,12).flatMap(item=>{
       const imageIndex=Number(item?.imageIndex),text=String(item?.text||'').trim().slice(0,1200),ref=item?.thumbnail;
       if(!Number.isInteger(imageIndex)||imageIndex<0||imageIndex>=12||!text)return [];
       const thumbnail=ref&&/^[a-f0-9-]{36}$/i.test(ref.jobId||'')&&ref.index===imageIndex?{jobId:ref.jobId,index:imageIndex}:null;
       return [{id:`image:${imageIndex}`,imageIndex,text,observation:String(item.observation||'').trim().slice(0,700),visibleText:String(item.visibleText||'').trim().slice(0,500),confidence:['high','medium','low'].includes(item.confidence)?item.confidence:'low',evidenceSource:'workflow_model',thumbnail}];
     }):[];
-    if(!hasTranscript&&!videoEvidence.length&&!imageEvidence.length&&!String(capture.shareText||'').trim())throw new Error('云端没有返回可核对的语音、画面、图集或笔记正文。');
+    const liveVideoEvidence=Array.isArray(result.liveVideoEvidence)?result.liveVideoEvidence.slice(0,12).flatMap(item=>{
+      const imageIndex=Number(item?.imageIndex),status=['analyzed','failed','skipped'].includes(item?.status)?item.status:'';
+      const text=String(item?.text||'').trim().slice(0,1000),ref=item?.coverThumbnail;
+      if(!Number.isInteger(imageIndex)||imageIndex<0||imageIndex>=12||!status||status==='analyzed'&&!text)return [];
+      const coverThumbnail=ref&&/^[a-f0-9-]{36}$/i.test(ref.jobId||'')&&ref.index===imageIndex?{jobId:ref.jobId,index:imageIndex}:null;
+      const modelTokenUsage=item?.modelTokenUsage&&typeof item.modelTokenUsage==='object'?Object.fromEntries(Object.entries(item.modelTokenUsage).filter(([k,v])=>/^[a-z_]{1,40}$/.test(k)&&Number.isFinite(Number(v))).slice(0,8).map(([k,v])=>[k,Number(v)])):null;
+      return [{id:`live-video:${imageIndex}`,imageIndex,durationMs:item.durationMs!=null&&Number.isFinite(Number(item.durationMs))?Number(item.durationMs):null,status,text,confidence:['high','medium','low'].includes(item?.confidence)?item.confidence:'low',evidenceSource:'workflow_model',reason:['duration_unsupported','no_video_address','media_invalid','live_video_too_large','media_unavailable','analysis_failed'].includes(item?.reason)?item.reason:null,modelInvoked:item?.modelInvoked===true,modelTokenUsage,coverThumbnail}];
+    }):[];
+    if(!hasTranscript&&!videoEvidence.length&&!imageEvidence.length&&!liveVideoEvidence.some(x=>x.status==='analyzed')&&!String(capture.shareText||'').trim())throw new Error('云端没有返回可核对的语音、画面、图集或笔记正文。');
     capture.ingestStatus='transcribed';capture.ingestError='';
     capture.lastIngestAttempt={id:String(result.diagnostics?.attemptId||capture.ingestJobId||'').slice(0,80),pipelineVersion:String(result.diagnostics?.pipelineVersion||'').slice(0,80),stage:'complete',reason:'',updatedAt:result.updatedAt||now.toISOString()};
     capture.resolvedSource={provider:String(result.source?.provider||'').slice(0,40),platform:String(result.source?.platform||'').slice(0,40),contentId:String(result.source?.contentId||'').slice(0,100),title:String(result.source?.title||'').slice(0,180),creatorName:String(result.source?.creatorName||'').slice(0,120),description:String(result.source?.description||'').slice(0,2000),durationMs:Number(result.source?.durationMs)||null,retrievedAt:result.source?.retrievedAt||now.toISOString()};
     if(hasTranscript)capture.transcript={source:'asr',model:String(result.transcript.model||'').slice(0,100),text:result.transcript.text.trim().slice(0,30000),segments:Array.isArray(result.transcript.segments)?result.transcript.segments.slice(0,150).map(s=>({startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs),text:String(s.text||'').slice(0,1000)})):[],createdAt:result.transcript.createdAt||now.toISOString()};
-    if(videoEvidence.length)capture.videoEvidence=videoEvidence;
-    if(imageEvidence.length)capture.imageEvidence=imageEvidence;
+    if(!hasTranscript)capture.transcript=null;
+    capture.videoEvidence=videoEvidence;
+    capture.imageEvidence=imageEvidence;
+    capture.liveVideoEvidence=liveVideoEvidence;
     const actionSegments=Array.isArray(result.actionSegments)?result.actionSegments.slice(0,10).flatMap((item,n)=>{
       const startMs=Number(item?.startMs),endMs=Number(item?.endMs),frameStartMs=Number(item?.frame?.startMs),ref=item?.thumbnail;
       if(!Number.isFinite(startMs)||startMs<0||!Number.isFinite(endMs)||endMs<startMs)return [];
@@ -110,8 +120,8 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     }):[];
     capture.actionSegments=actionSegments;
     const visualProvider=['bailian_video_workflow','bailian_video_url','bailian_omni_video_url'].includes(result.analysis?.provider);
-    capture.videoAnalysis=visualProvider?{provider:result.analysis.provider,evidenceTrust:result.analysis?.evidenceTrust||'parser',model:String(result.analysis?.model||'').slice(0,80),modelTokenUsage:result.analysis?.modelTokenUsage&&typeof result.analysis.modelTokenUsage==='object'?{input:Number(result.analysis.modelTokenUsage.prompt_tokens)||0,output:Number(result.analysis.modelTokenUsage.completion_tokens)||0}:null,createdAt:now.toISOString()}:null;
-    capture.imageAnalysis=result.analysis?.provider==='douyin_image_post'?{provider:'douyin_image_post',evidenceTrust:'workflow_model',model:String(result.analysis?.model||'').slice(0,80),imagesAnalyzed:imageEvidence.length,createdAt:now.toISOString()}:null;
+    capture.videoAnalysis=visualProvider?{provider:result.analysis.provider,evidenceTrust:result.analysis?.evidenceTrust||'parser',model:String(result.analysis?.model||'').slice(0,80),modelTokenUsage:result.analysis?.modelTokenUsage&&typeof result.analysis.modelTokenUsage==='object'?{input:Number(result.analysis.modelTokenUsage.prompt_tokens)||0,output:Number(result.analysis.modelTokenUsage.completion_tokens)||0}:null,...(result.analysis?.frameCapture?{frameCapture:Object.fromEntries(['requested','cached','failed'].filter(k=>Number.isFinite(Number(result.analysis.frameCapture[k]))).map(k=>[k,Number(result.analysis.frameCapture[k])]))}:{}),createdAt:now.toISOString()}:null;
+    capture.imageAnalysis=result.analysis?.provider==='douyin_image_post'?{provider:'douyin_image_post',evidenceTrust:'workflow_model',model:String(result.analysis?.model||'').slice(0,80),imagesAnalyzed:imageEvidence.length,liveVideoCount:liveVideoEvidence.length,liveVideosAnalyzed:liveVideoEvidence.filter(v=>v.status==='analyzed').length,liveVideoModelCalls:liveVideoEvidence.filter(v=>v.modelInvoked).length,liveVideoModelTokenUsage:liveVideoEvidence.reduce((sum,v)=>{if(v.modelTokenUsage)for(const[k,n]of Object.entries(v.modelTokenUsage))sum[k]=(sum[k]||0)+n;return sum;},{}),createdAt:now.toISOString()}:null;
     const checked=result.cardDraft?validateKnowledgeImport({status:'ok',card:result.cardDraft},capture):null;
     capture.cardDraft=checked?.ok?checked.card:null;
     capture.ingestWarning=String(result.workflowWarning||(!capture.cardDraft?result.cardError||'逐字稿已保存，知识卡可在 App 内重新整理。':'')).slice(0,500);

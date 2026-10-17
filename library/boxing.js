@@ -266,7 +266,7 @@ export const activities = [
     mistakes: ['不缠手或拳套过轻：手腕扭伤、指关节擦伤。', '站得太近推着沙袋打，距离和发力都失真。', '只顾猛打、脚不动、手不回。'],
     breathing: PUNCH_BREATH,
     dose: '3 回合 × 2～3 分钟，回合间休息 1 分钟。', sourceId: 'bxWrap' }),
-  entry('bx-jump-rope', '拳击跳绳', 'cardio', ['小腿','足踝','全身'], 6, { ...BX, familyId: 'conditioning', equipment: ['jump_rope'], impact: 'medium',
+  entry('bx-jump-rope', '拳击跳绳', 'cardio', ['小腿','足踝','全身'], 6, { ...BX, familyId: 'conditioning', canonicalId:'rope-skipping', equipment: ['jump_rope'], impact: 'medium',
     aliases: ['jump rope','boxer skip','skipping','拳击步跳绳','交替跳'],
     description: '拳手常用的交替换脚跳绳，训练节奏、脚下灵活与心肺耐力。',
     setup: ['绳长：单脚踩住绳中间，手柄大约到腋下高度。', '在有一定弹性、不打滑的地面练习，穿有支撑的运动鞋；头顶与四周留出空间。', '先不拿绳，徒手练习节奏：单脚轻跳，另一脚脚尖轻点地面，左右交替。'],

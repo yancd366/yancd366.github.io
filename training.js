@@ -12,6 +12,7 @@ export function validateSets(sets) {
     if (x.reps==null && x.loadKg==null && x.seconds==null && !x.feeling) throw new Error('空白组不用保存。');
     if (x.loadBasis!=null && !Object.hasOwn(LOAD_BASES,x.loadBasis)) throw new Error('请注明重量口径。');
     if (x.feeling!=null && x.feeling!=='' && !Object.hasOwn(FEELINGS,x.feeling)) throw new Error('感受选项无效。');
+    if (x.phase!=null && !['warmup','main','cooldown'].includes(x.phase)) throw new Error('组次用途无效。');
   }
   return sets;
 }

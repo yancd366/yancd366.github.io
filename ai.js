@@ -3,7 +3,7 @@
 import { activities, activityById, goals, places, equipmentLabels, bodyRegions, systems, tiers, phases } from './catalog.js';
 import { aiEligible, availableEquipment, uid, PHASE_RANK } from './domain.js';
 
-import { safetyBlock, safetyContext, canonicalMovement } from './safety.js';
+import { safetyBlock, safetyContext, canonicalMovement, movementIntent, excludedPainRegions, painConstraintMessage } from './safety.js';
 import { validateSets, setSummary, setsText, parseSetsText } from './training.js';
 import { activeAssessments, abilityDimensions, abilitySignals, abilitySides, abilityAreas } from './abilities.js';
 import { useForPhase, useLabel } from './activity-uses.js';
@@ -81,6 +81,7 @@ export function buildIntakeInput(state, text, defaults, now = new Date()) {
   return {
     today: localDate(now),
     userText: String(text || '').trim(),
+    movementIntent: movementIntent(text),
     defaults: { minutes: defaults.minutes, place: defaults.place, focus: defaults.focus, readiness: defaults.readiness, targetRegions: defaults.targetRegions || [] },
     profile: { experience: state.profile.experience, homeEquipment: state.profile.equipment, bodyNotes: state.profile.bodyNotes || '' },
     options: { place: places, focus: goals, readiness: READINESS, targetRegions: Object.fromEntries(Object.entries(bodyRegions).map(([k, v]) => [k, v.label])), equipment: equipmentLabels, systems }
@@ -103,18 +104,21 @@ function checkRequestFields(r, errors) {
 // Unstated fields (null) fall back to the on-screen selection; stated ones override it.
 export function validateIntake(output, defaults) {
   const errors = [];
+  const raw=String(defaults.userText||''),intent=movementIntent(raw),block=safetyBlock({}, {userText:raw});
+  if(raw&&block)return {ok:true,status:'refer',reason:block};
   if (!output || !['ok', 'clarify', 'refer'].includes(output.status)) return { ok: false, errors: ['status 应为 ok / clarify / refer'] };
   if (output.status === 'clarify') return typeof output.question === 'string' && output.question.trim() ? { ok: true, status: 'clarify', question: output.question.trim() } : { ok: false, errors: ['clarify 需要 question'] };
   if (output.status === 'refer') return typeof output.reason === 'string' && output.reason.trim() ? { ok: true, status: 'refer', reason: output.reason.trim() } : { ok: false, errors: ['refer 需要 reason'] };
   checkRequestFields(output.request, errors);
   if (errors.length) return { ok: false, errors };
   const r = output.request, pick = (k, fallback) => r[k] ?? fallback;
-  const focus = pick('focus', defaults.focus);
+  const pureGoal=intent.hasGoals&&!intent.hasPain&&!/不适|不舒服|酸|僵|发紧/.test(raw);
+  const focus = pick('focus',intent.targetRegions.length?'strength':defaults.focus);
   return { ok: true, status: 'ok', request: {
-    minutes: pick('minutes', defaults.minutes), place: pick('place', defaults.place), focus, readiness: pick('readiness', defaults.readiness),
-    targetRegions: focus === 'strength' ? [...new Set(pick('targetRegions', defaults.targetRegions || []))] : [],
+    minutes: pick('minutes', defaults.minutes), place: pick('place', defaults.place), focus, readiness: pureGoal&&r.readiness==='discomfort'?defaults.readiness:pick('readiness', defaults.readiness),
+    targetRegions: focus === 'strength' ? [...new Set(pick('targetRegions',intent.targetRegions.length?intent.targetRegions:defaults.targetRegions || []))] : [],
     equipment: r.equipment ?? null, preferredSystems: r.preferredSystems || [], avoid: r.avoid || [],
-    bodyToday: r.bodyToday || '', preferences: r.preferences || '', userText: defaults.userText || ''
+    bodyToday: pureGoal?'':r.bodyToday || '', preferences: r.preferences || '', userText: defaults.userText || '', painContextText:defaults.painContextText||''
   } };
 }
 
@@ -136,6 +140,7 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
       minutes: request.minutes, place: places[request.place], focus: goals[request.focus], readiness: READINESS[request.readiness],
       targetRegions: (request.targetRegions || []).map(r => bodyRegions[r].label), preferredSystems: (request.preferredSystems || []).map(s => systems[s]),
       userText: request.userText || '', bodyToday: request.bodyToday || '', avoid: request.avoid || [], preferences: request.preferences || '',
+      excludedPainRegions:excludedPainRegions(state.profile,request),painRule:painConstraintMessage(state.profile,request),
       skipWarmup: Boolean(state.profile.skipWarmup || request.skipWarmup)
     },
     profile: {
@@ -212,7 +217,7 @@ export function validatePlan(output, { request, profile, now = new Date(), uses 
     // Same accounting as rule plans: a small transition reserve, the rest stays visible as unused time.
     plannedMinutes: planned, transitionMinutes: Math.min(request.minutes - planned, Math.max(0, items.length - 1)), unallocatedMinutes: request.minutes - planned - Math.min(request.minutes - planned, Math.max(0, items.length - 1)),
     knowledgeUsed: (Array.isArray(output.knowledgeUsed) ? output.knowledgeUsed : []).map(id => refs.find(r => r.id === id)).filter((r, n, all) => r && all.indexOf(r) === n).slice(0, 6).map(r => ({ id: r.id, title: r.title, type: r.type || r.kind || '知识', ...(r.sourceUrl?{url:r.sourceUrl}:{}) })),
-    explanation: clip(output.explanation, 400), cautions: (Array.isArray(output.cautions) ? output.cautions : []).filter(c => typeof c === 'string').map(c => clip(c, 200)).slice(0, 5),
+    explanation: clip(output.explanation, 400), cautions: [...(painConstraintMessage(profile,request)?[painConstraintMessage(profile,request)]:[]),...(Array.isArray(output.cautions) ? output.cautions : []).filter(c => typeof c === 'string').map(c => clip(c, 200))].slice(0, 5),
     regionCoverage,
     ...(method ? { methodPreference: { id: method.id, title: method.title, mode: method.mode, modeLabel: method.modeLabel }, methodReport: methodCheck.report } : {})
   };

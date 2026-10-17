@@ -2,6 +2,7 @@ import { initialState } from './domain.js';
 import { publicActivities,goals,equipmentLabels } from './catalog.js';
 import { validateSets } from './training.js';
 import { normalizeAssessment } from './abilities.js';
+import {mediaIdOK} from './activity-media.js';
 const publicIds=publicActivities.map(a=>a.id);
 const id=x=>typeof x==='string'&&/^[-_a-zA-Z0-9:.]{1,150}$/.test(x);
 const array=(x,name)=>{if(!Array.isArray(x)||x.length>10000)throw new Error(`${name} 格式无效`);return x;};
@@ -17,12 +18,18 @@ export function normalizeStore(data){
   if(s.activityUses!=null)array(s.activityUses,'activityUses');
   if(s.topicCards!=null)array(s.topicCards,'topicCards');
   if(s.personalActivities!=null)array(s.personalActivities,'personalActivities');
+  if(s.activityMedia!=null){array(s.activityMedia,'activityMedia');const seen=new Set();for(const m of s.activityMedia){if(!id(m.id)||seen.has(m.id)||!known.has(m.activityId)||!mediaIdOK(m.thumbnailId)||!['image_post','video_frame'].includes(m.kind)||typeof m.caption!=='string')throw new Error('动作配图格式无效。');seen.add(m.id);}}
   for(const k of ['name','goalText','bodyNotes'])if(typeof s.profile[k]!=='string')throw new Error('档案文字格式无效。');
   if(!goals[s.profile.focus]||!['beginner','regular'].includes(s.profile.experience)||!Array.isArray(s.profile.equipment)||s.profile.equipment.some(e=>!equipmentLabels[e]))throw new Error('档案选项无效。');
   for(const group of [s.notes,s.knowledge,s.observations,s.sessions,s.captures||[]]){
     const seen=new Set();for(const x of group){if(!id(x.id)||seen.has(x.id))throw new Error('记录 ID 无效或重复。');seen.add(x.id);}
   }
   const checkItem=i=>{if(!id(i.id)||!['pending','completed','skipped'].includes(i.status))throw new Error('训练项目格式无效。');if(i.activityId&&!known.has(i.activityId))throw new Error('备份引用了当前动作库没有的动作。');if(i.actualSetDetails)validateSets(i.actualSetDetails);};
+  if(s.draft?.source==='free'){
+    const c=s.draft.freeConfig;
+    if(!c||!['all','warmup','main','cooldown'].includes(c.phase)||!['all','chest','back','shoulders','arms','core','hips_legs','forearms_wrists','calves_ankles','neck'].includes(c.region)||typeof c.search!=='string'||!['home','office','gym'].includes(s.draft.request?.place))throw new Error('自由训练草稿格式无效。');
+    array(s.draft.items,'自由训练项目').forEach(checkItem);
+  }
   for(const session of s.sessions){
     if(!Number.isFinite(Date.parse(session.endedAt)))throw new Error('训练日期无效。');
     if(session.actualMinutes!=null&&(!Number.isFinite(session.actualMinutes)||session.actualMinutes<=0||session.actualMinutes>1440))throw new Error('训练时长无效。');
@@ -34,6 +41,8 @@ export function normalizeStore(data){
     if(typeof c.knowledgeId!=='string'||typeof c.shareText!=='string'||typeof c.rawUrl!=='string'||typeof c.status!=='string')throw new Error('分享收件箱格式无效。');
     if(c.manualSummary!=null&&(typeof c.manualSummary!=='string'||c.manualSummary.length>2000))throw new Error('个人视频总结格式无效。');
     if(c.manualContentType!=null&&typeof c.manualContentType!=='string')throw new Error('个人视频总结分类无效。');
+    if(c.videoAnalysis?.frameCapture!=null){const f=c.videoAnalysis.frameCapture;if(!['requested','cached','failed'].every(k=>Number.isInteger(f[k])&&f[k]>=0&&f[k]<=12)||f.cached+f.failed>f.requested)throw new Error('Omni 取帧统计无效。');}
+    for(const item of c.videoEvidence||[]){if(item.thumbnail&&(!/^[a-f0-9-]{36}$/i.test(item.thumbnail.jobId||'')||!Number.isInteger(item.thumbnail.index)||item.thumbnail.index<0||item.thumbnail.index>11))throw new Error('视频帧引用无效。');if(item.frameAtMs!=null&&(!Number.isFinite(item.frameAtMs)||item.frameAtMs<0||item.frameAtMs>30*60*1000))throw new Error('视频帧时间无效。');if(item.frameStatus!=null&&!['ready','extractor_unavailable','timeout','invalid_time','frame_unavailable'].includes(item.frameStatus))throw new Error('视频帧状态无效。');}
     c.imageEvidence ||= [];
     if(!Array.isArray(c.imageEvidence)||c.imageEvidence.length>12)throw new Error('图文识别记录格式无效。');
     const imageIndexes=new Set();
@@ -41,6 +50,14 @@ export function normalizeStore(data){
       if(!Number.isInteger(image?.imageIndex)||image.imageIndex<0||image.imageIndex>=12||imageIndexes.has(image.imageIndex)||typeof image.text!=='string'||image.text.length>1200)throw new Error('图文识别记录格式无效。');
       imageIndexes.add(image.imageIndex);
       if(image.thumbnail&&(!/^[a-f0-9-]{36}$/i.test(image.thumbnail.jobId||'')||image.thumbnail.index!==image.imageIndex))throw new Error('图文预览引用无效。');
+    }
+    c.liveVideoEvidence||=[];
+    if(!Array.isArray(c.liveVideoEvidence)||c.liveVideoEvidence.length>12)throw new Error('动态小视频识别记录格式无效。');
+    const liveIndexes=new Set();
+    for(const item of c.liveVideoEvidence){
+      if(!Number.isInteger(item?.imageIndex)||item.imageIndex<0||item.imageIndex>=12||liveIndexes.has(item.imageIndex)||!['analyzed','failed','skipped'].includes(item.status)||typeof item.text!=='string'||item.text.length>1000||item.status==='analyzed'&&!item.text)throw new Error('动态小视频识别记录格式无效。');
+      liveIndexes.add(item.imageIndex);
+      if(item.reason!=null&&!['duration_unsupported','no_video_address','media_invalid','live_video_too_large','media_unavailable','analysis_failed'].includes(item.reason))throw new Error('动态小视频失败原因无效。');if(item.coverThumbnail&&(!/^[a-f0-9-]{36}$/i.test(item.coverThumbnail.jobId||'')||item.coverThumbnail.index!==item.imageIndex))throw new Error('动态小视频原图引用无效。');
     }
   }
   {const seen=new Set();for(const p of s.creatorProfiles||[]){if(!id(p?.id)||seen.has(p.id))throw new Error('方法卡 ID 无效或重复。');seen.add(p.id);if(typeof p.creatorKey!=='string'||typeof p.title!=='string'||!Array.isArray(p.principles)||(p.activityIds||[]).some(x=>!known.has(x)))throw new Error('方法卡格式无效。');}}
@@ -64,7 +81,7 @@ export function rawBackupText(raw){const data=JSON.parse(raw);if(!data||typeof d
 export function parseBackup(text){if(text.length>5_000_000)throw new Error('备份过大，请使用 5 MB 以内的 JSON 文件。');const s=normalizeStore(JSON.parse(text));s.settings={...s.settings,aiConsent:null,aiDirect:null,ingest:null};s.captures=s.captures.map(c=>c.ingestStatus==='queued'?{...c,ingestStatus:'failed',ingestJobId:null,ingestError:'后台任务不会随备份迁移；可在这台设备重新尝试。'}:c);return s;}
 export function mergeBackup(current,incoming,restoreProfile=false){
   const next=structuredClone(current);let added=0;
-  for(const key of ['sessions','notes','knowledge','captures','creatorProfiles','savedPlans','activityUses','topicCards','personalActivities','observations','assessments','abilityEvidence']){
+  for(const key of ['sessions','notes','knowledge','captures','creatorProfiles','savedPlans','activityUses','topicCards','personalActivities','activityMedia','observations','assessments','abilityEvidence']){
     next[key] ||= [];const ids=new Set(next[key].map(x=>x.id));
     for(const x of incoming[key]||[])if(!ids.has(x.id)){next[key].push(structuredClone(x));ids.add(x.id);added++;}
   }

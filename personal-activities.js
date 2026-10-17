@@ -65,7 +65,7 @@ export function createPersonalActivity(state, input, { source = null, parentActi
   if (clash) throw new Error(`动作库里已经有「${clash.name}」，可以直接给它记用途或心得，不必重复新建。`);
   if (parentActivityId && !activityById(parentActivityId)) throw new Error('找不到母动作。');
   const p = { id: `my-${uid()}`, status: 'confirmed', planningUse: PLANNING_USES[planningUse] ? planningUse : 'manual_only', ...draft,
-    parentActivityId, source: source ? { knowledgeId: source.knowledgeId || null, quote: clip(source.quote, 300), lowTrust: Boolean(source.lowTrust), thumbnailId: clip(source.thumbnailId, 180)||null, sourceUrl: clip(source.sourceUrl, 1000)||null, startMs:Number.isFinite(Number(source.startMs))?Number(source.startMs):null, endMs:Number.isFinite(Number(source.endMs))?Number(source.endMs):null } : null,
+    parentActivityId, source: source ? { knowledgeId: source.knowledgeId || null, quote: clip(source.quote, 300), lowTrust: Boolean(source.lowTrust), thumbnailId: clip(source.thumbnailId, 180)||null, sourceUrl: clip(source.sourceUrl, 1000)||null, kind:source.kind==='image_post'?'image_post':'video_frame', startMs:source.startMs!=null&&Number.isFinite(Number(source.startMs))?Number(source.startMs):null, endMs:source.endMs!=null&&Number.isFinite(Number(source.endMs))?Number(source.endMs):null } : null,
     personalNote: clip(personalNote, 1000), createdAt: date(now), updatedAt: date(now), archivedAt: null };
   state.personalActivities ||= []; state.personalActivities.push(p);
   return p;
@@ -86,7 +86,8 @@ export function activityReferences(state, id) {
   const items = [...(state.sessions || []).flatMap(s => s.items), ...(state.draft?.items || []), ...(state.savedPlans || []).flatMap(t => t.items)];
   return items.filter(i => i.activityId === id).length + (state.notes || []).filter(n => n.activityId === id).length
     + (state.knowledge || []).filter(k => (k.activityIds || []).includes(id)).length + (state.activityUses || []).filter(u => u.activityId === id).length
-    + (state.creatorProfiles || []).filter(p => (p.activityIds || []).includes(id)).length;
+    + (state.creatorProfiles || []).filter(p => (p.activityIds || []).includes(id)).length
+    + (state.activityMedia || []).filter(m=>m.activityId===id).length;
 }
 export function deletePersonalActivity(state, id) {
   findP(state, id);
