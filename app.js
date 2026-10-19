@@ -22,7 +22,7 @@ import { normalizeTopics, corpusTopics, buildKnowledgeAskInput, validateKnowledg
 import { USES, useLabel, usesFor, addManualUse, deleteUse } from './activity-uses.js';
 import { defaultPlanName,templateFromPlan,templateFromSession,saveTemplate,renameTemplate,deleteTemplate,markTemplateUsed,loadTemplate } from './saved-plans.js';
 import { pauseActiveTimer, resumeActiveTimer } from './timing.js';
-import { routes, shell, todayHTML, recordsHTML, libraryHTML, knowledgeHTML, bodyHTML } from './views.js';
+import { routes, shell, todayHTML, recordsHTML, libraryHTML, knowledgeHTML, knowledgeDetailHTML, bodyHTML } from './views.js';
 import {createFreeWorkout,isFreeWorkout,selectFreeActivity,freeRecordingBlock,removeFreeSet,removeFreePending,freeRegionLabels} from './free-training.js';
 import {freeStartForm,activityHistoryHTML} from './free-training-view.js';
 import {FREE_SORTS} from './activity-history.js';
@@ -39,7 +39,8 @@ try {
   if(state.schemaVersion!==SCHEMA_VERSION||!Array.isArray(state.sessions)||!state.profile||!Array.isArray(state.notes)||!Array.isArray(state.knowledge)||!Array.isArray(state.captures)||!Array.isArray(state.observations))throw new Error('记录格式不兼容');
 }catch{state=initialState();storageError=true;}
 syncPersonalActivities(state);
-let page=routes[location.hash.slice(1)]?location.hash.slice(1):'today';
+function locationRoute(){const [route,query='']=location.hash.slice(1).split('?');return {page:routes[route]?route:'today',knowledgeId:route==='knowledge'?new URLSearchParams(query).get('card'):null};}
+let {page,knowledgeId:knowledgeDetailId}=locationRoute(),knowledgeListScroll=0;
 let request=structuredClone(state.draft?.request||{minutes:20,place:'home',focus:state.profile.focus,readiness:'normal',targetRegions:[]});
 let filters={search:'',category:'all',system:'all',place:'all',personal:'all'},knowledgeFilter='all',knowledgeTopic='',knowledgeKind='',knowledgeContentType='',toastTimer;
 const mediaUrls=new Map();
@@ -56,9 +57,9 @@ function commit(change){
   catch{toast('保存失败：浏览器空间不足或存储不可用。请导出备份。');return false;}
 }
 function render(){
-  const content={today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind,knowledgeContentType),body:()=>bodyHTML(state)}[page]();
+  const content={today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeDetailId?knowledgeDetailHTML(state,knowledgeDetailId):knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind,knowledgeContentType),body:()=>bodyHTML(state)}[page]();
   $('#app').innerHTML=shell(page,state,content,storageError);
-  if(page==='knowledge')enhanceKnowledgeFilters();
+  if(page==='knowledge'&&!knowledgeDetailId)enhanceKnowledgeFilters();
   showOfflineStatus(offlineStatus);
   hydrateImages($('#app'));
 }
@@ -70,8 +71,10 @@ function enhanceKnowledgeFilters(){
   const source=$('#app .kind-pills'),topic=$('#app .topic-pills');
   if(source||topic){const more=document.createElement('details');more.className='knowledge-more-filters';more.innerHTML='<summary>来源与主题筛选</summary>';if(source)more.append(source);if(topic)more.append(topic);bar.insertAdjacentElement('afterend',more);}
 }
-function navigate(next){if($('#sheet').open)$('#sheet').close();page=next;location.hash=next;render();window.scrollTo({top:0});}
-window.addEventListener('hashchange',()=>{if(routes[location.hash.slice(1)]&&page!==location.hash.slice(1)){page=location.hash.slice(1);render();}});
+function navigate(next){if($('#sheet').open)$('#sheet').close();page=next;knowledgeDetailId=null;location.hash=next;render();window.scrollTo({top:0});}
+function openKnowledge(id){knowledgeListScroll=window.scrollY;page='knowledge';knowledgeDetailId=id;location.hash=`knowledge?card=${encodeURIComponent(id)}`;render();window.scrollTo({top:0});$('#knowledge-detail-title')?.focus({preventScroll:true});}
+function backToKnowledge(){knowledgeDetailId=null;page='knowledge';location.hash='knowledge';render();window.scrollTo({top:knowledgeListScroll});}
+window.addEventListener('hashchange',()=>{const next=locationRoute();if(page!==next.page||knowledgeDetailId!==next.knowledgeId){const returning=Boolean(knowledgeDetailId)&&next.page==='knowledge'&&!next.knowledgeId;if($('#sheet').open)$('#sheet').close();page=next.page;knowledgeDetailId=next.knowledgeId;render();window.scrollTo({top:returning?knowledgeListScroll:0});}});
 function hydrateImages(root=document){for(const image of root.querySelectorAll('img[data-local-image]')){const key=image.dataset.localImage;if(mediaUrls.has(`local:${key}`)){image.src=mediaUrls.get(`local:${key}`);continue;}readImage(key).then(blob=>{if(!blob||!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(`local:${key}`,url);image.src=url;}).catch(()=>{});}for(const image of root.querySelectorAll('img[data-frame-capture]')){if(image.dataset.loading==='true'||image.hasAttribute('src'))continue;const capture=state.captures.find(x=>x.id===image.dataset.frameCapture),segment=capture?.actionSegments?.find(x=>x.id===image.dataset.frameSegment)||capture?.videoEvidence?.find(x=>x.id===image.dataset.frameSegment);if(!capture||!segment?.thumbnail)continue;const key=`frame:${segment.thumbnail.jobId}:${segment.thumbnail.index}`;if(mediaUrls.has(key)){image.src=mediaUrls.get(key);continue;}image.dataset.loading='true';readActionFrame(capture,segment,state).then(blob=>{rememberMediaBlob(key,blob);if(!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(key,url);image.src=url;}).catch(()=>{image.alt='动作截图暂不可用，请重新解析视频';}).finally(()=>{image.dataset.loading='false';});}for(const image of root.querySelectorAll('img[data-capture-image]')){if(image.dataset.loading==='true'||image.hasAttribute('src'))continue;const staticDetails=image.closest('.douyin-image-evidence'),liveDetails=image.closest('.live-photo-videos');if(staticDetails&&!staticDetails.open||liveDetails&&!liveDetails.open)continue;const capture=state.captures.find(x=>x.id===image.dataset.captureImage),index=Number(image.dataset.imageIndex),item=capture?.imageEvidence?.find(x=>x.imageIndex===index),live=capture?.liveVideoEvidence?.find(x=>x.imageIndex===index),thumbnail=item?.thumbnail||live?.coverThumbnail;if(!capture||!thumbnail)continue;const mediaItem={thumbnail,imageIndex:index};const key=`postimage:${thumbnail.jobId}:${thumbnail.index}`;if(mediaUrls.has(key)){image.src=mediaUrls.get(key);continue;}image.dataset.loading='true';readImageEvidence(capture,mediaItem,state).then(blob=>{rememberMediaBlob(key,blob);if(!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(key,url);image.src=url;}).catch(()=>{image.alt='图文预览已过期，请打开原图文核对';}).finally(()=>{image.dataset.loading='false';});}}
 function showModal(title,html){const d=$('#sheet');d.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" data-action="close" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${html}</div>`;if(!d.open)d.showModal();hydrateImages(d);}
 // ---------- 我的动作 ----------
@@ -302,7 +305,7 @@ async function pollIngest(captureId){
       if(result.status==='complete'){
         const saved=state.captures.find(c=>c.id===captureId);
         toast(saved?.cardDraft?'知识卡草稿已准备好，请核对。':'视频已解析，可稍后整理知识卡。');
-        if(saved?.cardDraft&&page==='knowledge'&&!$('#sheet').open)reviewIngestDraft(captureId);
+        if(saved?.cardDraft&&page==='knowledge'&&knowledgeDetailId===saved.knowledgeId&&!$('#sheet').open)reviewIngestDraft(captureId);
       }else toast(result.message||'暂时无法自动整理，链接仍在收件箱。');
     }
   }catch(e){if((terminal||Date.now()-new Date(c.updatedAt||c.capturedAt).getTime()>48*3600000)&&commit(s=>{const item=s.captures.find(x=>x.id===captureId);item.ingestStatus='failed';item.ingestError=terminal?'云端结果无法核对，请重试。':'任务已过期，请重试。';}))render();}
@@ -328,10 +331,10 @@ function reviewIngestDraft(captureId){
   if(!checked.ok){toast('知识卡草稿的来源依据已失效，请重新整理。');return;}
   pendingKnowledge={captureId,card:checked.card,warnings:checked.warnings};knowledgeConfirmDialog();
 }
-function analyzeCapture(captureId){
+function analyzeCapture(captureId,{existingOnly=false}={}){
   const capture=(state.captures||[]).find(c=>c.id===captureId);
   if(!capture)return toast('找不到这条分享，请刷新后重试。');
-  if(preferVideoIngest(capture))return startIngest(captureId,true);
+  if(!existingOnly&&preferVideoIngest(capture))return startIngest(captureId,true);
   if(!captureHasEvidence(capture)){captureDialog(captureId);toast('先补充文案、字幕或截图中的文字，才能整理。');return;}
   if(!ensureAI())return;
   withBusy(async()=>{
@@ -531,6 +534,8 @@ function importDialog(){
 function manualLogDialog(){showModal('补记一次训练',`<form id="manual-log-form"><label>日期<input name="date" type="date" required value="${new Date().toLocaleDateString('en-CA')}"></label><label>活动名称<input name="name" required maxlength="80" placeholder="例如：羽毛球"></label><label>实际时长（分钟，可选）<input name="minutes" type="number" min="1" max="1440"></label><label>感受<textarea name="note" maxlength="2000"></textarea></label><button class="primary" type="submit">保存记录</button></form>`);}
 document.addEventListener('click',e=>{
   const el=e.target.closest('button');if(!el)return;
+  if(el.dataset.openKnowledge){openKnowledge(el.dataset.openKnowledge);return;}
+  if(el.dataset.action==='knowledge-back'){backToKnowledge();return;}
   if(el.dataset.manualActivity){
     const capture=state.captures.find(c=>c.id===el.dataset.manualActivity);if(!capture)return toast('找不到这条来源。');
     const type=el.dataset.sourceType;let segment;
@@ -561,7 +566,7 @@ document.addEventListener('click',e=>{
   if(el.hasAttribute('data-next')){if(timer){toast('请先结束或取消当前计时。');return;}if(commit(s=>s.draft.cursor=nextCursor(s.draft,s.draft.cursor??0)))render();return;}
   if(el.dataset.abilityArchive){const id=el.dataset.abilityArchive;if(commit(s=>{const a=s.assessments.find(a=>a.id===id);a.status=a.status==='archived'?'active':'archived';}))render();return;}
   if(el.dataset.abilityDelete){showModal('删除这条观察？','<p>观察和只属于它的原话都会删除，不影响训练记录。</p><button class="primary" data-action="confirm-ability-delete" data-id="'+esc(el.dataset.abilityDelete)+'">删除</button>');return;}
-  if(el.dataset.analyzeCapture){analyzeCapture(el.dataset.analyzeCapture);return;}
+  if(el.dataset.analyzeCapture){analyzeCapture(el.dataset.analyzeCapture,{existingOnly:true});return;}
   if(el.dataset.reviewIngest){reviewIngestDraft(el.dataset.reviewIngest);return;}
   if(el.dataset.editCapture){captureDialog(el.dataset.editCapture);return;}
   if(el.dataset.autoIngest){startIngest(el.dataset.autoIngest,el.dataset.forceIngest==='true');return;}
@@ -577,7 +582,7 @@ document.addEventListener('click',e=>{
   if(el.dataset.knowledgeFilter){knowledgeFilter=el.dataset.knowledgeFilter;render();return;}
   if(el.hasAttribute('data-knowledge-content')){knowledgeContentType=el.dataset.knowledgeContent;render();return;}
   if(el.hasAttribute('data-knowledge-kind')){knowledgeKind=el.dataset.knowledgeKind;render();return;}
-  if(el.hasAttribute('data-knowledge-topic')){knowledgeTopic=el.dataset.knowledgeTopic;render();return;}
+  if(el.hasAttribute('data-knowledge-topic')){knowledgeTopic=el.dataset.knowledgeTopic;if(knowledgeDetailId)backToKnowledge();else render();return;}
   if(el.dataset.saveSessionTemplate){templateDialog('session',el.dataset.saveSessionTemplate);return;}
   if(el.dataset.loadTemplate){loadSavedPlan(el.dataset.loadTemplate);return;}
   if(el.dataset.renameTemplate){const t=(state.savedPlans||[]).find(x=>x.id===el.dataset.renameTemplate);if(t)showModal('重命名',`<form id="template-rename-form" data-id="${esc(t.id)}"><label>名字<input name="name" required maxlength="60" value="${esc(t.name)}"></label><button class="primary full" type="submit">保存</button></form>`);return;}
@@ -621,7 +626,7 @@ document.addEventListener('click',e=>{
     case 'self-check-prev':if(pendingSelfCheck)selfCheckStep(Math.max(0,pendingSelfCheck.index-1));break;
     case 'ability-retry':showModal('整理身体与能力情况',abilityIntakeForm(pendingAbility||{}));break;
     case 'confirm-ability-delete':{const id=el.dataset.id;if(commit(s=>{s.assessments=s.assessments.filter(a=>a.id!==id);const used=new Set(s.assessments.flatMap(a=>a.evidenceIds||[]));s.abilityEvidence=(s.abilityEvidence||[]).filter(e=>used.has(e.id));})){$('#sheet').close();render();toast('已删除这条观察。');}break;}
-    case 'confirm-knowledge-delete':{const id=el.dataset.id;if(commit(s=>deleteKnowledge(s,id))){$('#sheet').close();render();toast('已删除这条知识。');}break;}
+    case 'confirm-knowledge-delete':{const id=el.dataset.id;if(commit(s=>deleteKnowledge(s,id))){$('#sheet').close();if(knowledgeDetailId===id)backToKnowledge();else render();toast('已删除这条知识。');}break;}
     case 'save-template':if(state.draft)templateDialog('draft');break;
     case 'confirm-template-delete':{const id=el.dataset.id;if(commit(s=>deleteTemplate(s,id))){$('#sheet').close();render();toast('已删除这套收藏。');}break;}
     case 'confirm-method-delete':{const id=el.dataset.id;if(commit(s=>deleteMethodCard(s,id))){$('#sheet').close();render();toast('已删除这张方法卡。');}break;}
