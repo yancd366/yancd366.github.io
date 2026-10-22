@@ -36,3 +36,14 @@ export function knowledgeAddedDate(knowledge,capture){
   }
   return {iso:null,text:'未记录'};
 }
+export function newestKnowledgeFirst(rows,captures=[]){
+  const byKnowledge=new Map(captures.map(c=>[c.knowledgeId,c]));
+  const added=k=>{
+    for(const value of [byKnowledge.get(k.id)?.capturedAt,k.createdAt]){
+      if(typeof value==='string'&&value.trim()&&Number.isFinite(Date.parse(value)))return Date.parse(value);
+    }
+    return -Infinity;
+  };
+  // A tie (or missing dates) uses reverse insertion order; never sort the store in place.
+  return rows.map((row,index)=>({row,index,time:added(row)})).sort((a,b)=>a.time===b.time?b.index-a.index:b.time-a.time).map(x=>x.row);
+}

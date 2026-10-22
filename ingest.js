@@ -1,6 +1,7 @@
 // Browser-side client for the optional cloud video ingestion service.
 // Its personal access token stays on this device and is removed from JSON backups.
 import { validateKnowledgeImport } from './knowledge.js';
+import { PREVIEW_RETENTION_DAYS } from './media-policy.js';
 export const allowedIngestBase=value=>{
   try{
     const u=new URL(String(value||'').trim());
@@ -102,7 +103,7 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
       return [{id:`live-video:${imageIndex}`,imageIndex,durationMs:item.durationMs!=null&&Number.isFinite(Number(item.durationMs))?Number(item.durationMs):null,status,text,confidence:['high','medium','low'].includes(item?.confidence)?item.confidence:'low',evidenceSource:'workflow_model',reason:['duration_unsupported','no_video_address','media_invalid','live_video_too_large','media_unavailable','analysis_failed'].includes(item?.reason)?item.reason:null,modelInvoked:item?.modelInvoked===true,modelTokenUsage,coverThumbnail}];
     }):[];
     if(!hasTranscript&&!videoEvidence.length&&!imageEvidence.length&&!liveVideoEvidence.some(x=>x.status==='analyzed')&&!String(capture.shareText||'').trim())throw new Error('云端没有返回可核对的语音、画面、图集或笔记正文。');
-    capture.ingestStatus='transcribed';capture.ingestError='';
+    capture.ingestStatus='transcribed';capture.ingestError='';capture.previewRetentionDays=result.previewRetentionDays===PREVIEW_RETENTION_DAYS?PREVIEW_RETENTION_DAYS:2;
     capture.lastIngestAttempt={id:String(result.diagnostics?.attemptId||capture.ingestJobId||'').slice(0,80),pipelineVersion:String(result.diagnostics?.pipelineVersion||'').slice(0,80),stage:'complete',reason:'',updatedAt:result.updatedAt||now.toISOString()};
     capture.resolvedSource={provider:String(result.source?.provider||'').slice(0,40),platform:String(result.source?.platform||'').slice(0,40),contentId:String(result.source?.contentId||'').slice(0,100),title:String(result.source?.title||'').slice(0,180),creatorName:String(result.source?.creatorName||'').slice(0,120),description:String(result.source?.description||'').slice(0,2000),durationMs:Number(result.source?.durationMs)||null,retrievedAt:result.source?.retrievedAt||now.toISOString()};
     if(hasTranscript)capture.transcript={source:'asr',model:String(result.transcript.model||'').slice(0,100),text:result.transcript.text.trim().slice(0,30000),segments:Array.isArray(result.transcript.segments)?result.transcript.segments.slice(0,150).map(s=>({startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs),text:String(s.text||'').slice(0,1000)})):[],createdAt:result.transcript.createdAt||now.toISOString()};

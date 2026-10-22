@@ -3,6 +3,7 @@ import { publicActivities,goals,equipmentLabels } from './catalog.js';
 import { validateSets } from './training.js';
 import { normalizeAssessment } from './abilities.js';
 import {mediaIdOK} from './activity-media.js';
+import {validateFollowAlong} from './follow-along.js';
 const publicIds=publicActivities.map(a=>a.id);
 const id=x=>typeof x==='string'&&/^[-_a-zA-Z0-9:.]{1,150}$/.test(x);
 const array=(x,name)=>{if(!Array.isArray(x)||x.length>10000)throw new Error(`${name} 格式无效`);return x;};
@@ -37,6 +38,7 @@ export function normalizeStore(data){
   }
   for(const n of s.notes){if(!known.has(n.activityId)||typeof n.text!=='string')throw new Error('心得格式无效。');n.history=n.history||[];array(n.history,'心得历史');}
   for(const k of s.knowledge){if(typeof k.title!=='string'||typeof k.text!=='string'||!Array.isArray(k.activityIds)||k.activityIds.some(x=>!known.has(x)))throw new Error('知识条目格式无效。');if(k.contentType!=null&&typeof k.contentType!=='string')throw new Error('知识内容分类无效。');if(k.planPoints!=null){array(k.planPoints,'训练方案要点');for(const p of k.planPoints)if(typeof p?.kind!=='string'||typeof p?.text!=='string'||typeof p?.evidenceQuote!=='string')throw new Error('训练方案要点格式无效。');}k.contentType ||= null;k.planPoints ||= [];}
+  for(const k of s.knowledge)if(k.followAlong!=null)validateFollowAlong(k.followAlong);
   for(const c of s.captures||[]){
     if(typeof c.knowledgeId!=='string'||typeof c.shareText!=='string'||typeof c.rawUrl!=='string'||typeof c.status!=='string')throw new Error('分享收件箱格式无效。');
     if(c.manualSummary!=null&&(typeof c.manualSummary!=='string'||c.manualSummary.length>2000))throw new Error('个人视频总结格式无效。');
