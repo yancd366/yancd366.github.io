@@ -3,6 +3,7 @@ import { safetyContext, safetyBlock, canonicalMovement, eligibleRisk, activityAl
 import { activeAssessments } from './abilities.js';
 import { useForPhase, useLabel } from './activity-uses.js';
 import { selfCheckPreference, SELF_CHECK_TASKS } from './self-check.js';
+import {validMinutes} from './training-duration.js';
 export const SCHEMA_VERSION = 1;
 export const STORE_KEY = 'xundong.v1';
 export const uid = () => globalThis.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -71,7 +72,7 @@ export function aiEligible(activity, request, profile) {
 export function createPlan(request, profile, sessions = [], now = new Date(), assessments = [], options = {}) {
   const safety=safetyBlock(profile,request);if(safety)return {blocked:true,reason:safety};
   const budget = Number(request.minutes);
-  if (!Number.isInteger(budget)||budget<2||budget>180 || !['home','office','gym'].includes(request.place) || !goals[request.focus]) throw new Error('请选择有效的时间、地点和训练重点。');
+  if (!validMinutes({...request,minutes:budget}) || !['home','office','gym'].includes(request.place) || !goals[request.focus]) throw new Error('请选择有效的时间、地点和训练重点；正式训练为 10～120 分钟。');
   if (request.targetRegions != null && (!Array.isArray(request.targetRegions) || request.targetRegions.some(id=>!Object.hasOwn(bodyRegions,id)))) throw new Error('请选择有效的训练部位。');
   const normalizedRequest = { ...request, targetRegions: request.focus === 'strength' ? [...new Set(request.targetRegions || [])] : [] };
   const wanted = request.focus === 'strength' ? (normalizedRequest.targetRegions.length ? normalizedRequest.targetRegions : Object.keys(bodyRegions).filter(id=>bodyRegions[id].common)) : [];

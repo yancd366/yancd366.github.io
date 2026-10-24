@@ -4,9 +4,9 @@
 import { buildMessages } from './ai.js';
 import { skillPrompts } from './skill-prompts.js';
 
-const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'knowledge-import': 0, 'creator-method': 0.3, 'knowledge-ask': 0.2, 'corpus-digest': 0.3, 'knowledge-search': 0.2, 'activity-intake': 0.2 };
+const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'source-brief': 0, 'knowledge-import': 0, 'creator-method': 0.3, 'knowledge-ask': 0.2, 'corpus-digest': 0.3, 'knowledge-search': 0.2, 'activity-intake': 0.2 };
 // 整理类任务可在 AI 设置里另选模型（同一服务商百炼，不需要重新授权）；「安排」始终用默认模型。
-export const ORGANIZE_SKILLS = ['log', 'ability-intake', 'knowledge-import', 'creator-method', 'knowledge-ask', 'corpus-digest', 'knowledge-search', 'activity-intake'];
+export const ORGANIZE_SKILLS = ['log', 'ability-intake', 'source-brief', 'knowledge-import', 'creator-method', 'knowledge-ask', 'corpus-digest', 'knowledge-search', 'activity-intake'];
 export const ORGANIZE_MODELS = ['qwen3.8-flash', 'qwen3.8-max'];
 export const organizeModelAllowed = (skill, model) => ORGANIZE_SKILLS.includes(skill) && ORGANIZE_MODELS.includes(model);
 // 只有这些技能会让百炼联网搜索（用户在「AI 搜索」里主动提问时）。
@@ -73,6 +73,7 @@ export async function callDirect(skill, messages, cfg, { fetchImpl = fetch, time
   if (!base || !cfg.key || !cfg.model) throw new Error('本机 AI 直连未配置完整（接口地址 / key / 模型）。');
   if (!allowedBase(base)) throw new Error('本机直连目前只支持阿里云百炼（https://dashscope.aliyuncs.com），请在 AI 设置里改正接口地址。');
   const body = { model: cfg.model, messages, temperature: TEMPERATURE[skill] ?? 0.2, response_format: { type: 'json_object' } };
+  if(skill==='source-brief'||skill==='knowledge-import')body.max_tokens=skill==='source-brief'?2000:7000;
   if (/dashscope/.test(base)) body.enable_thinking = false;
   if (SEARCH_SKILLS.includes(skill)) return callSearch({ base, key: cfg.key, model: cfg.model }, messages, body.temperature, { fetchImpl });
   let res;

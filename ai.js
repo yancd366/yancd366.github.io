@@ -81,6 +81,7 @@ export function buildIntakeInput(state, text, defaults, now = new Date()) {
   return {
     today: localDate(now),
     userText: String(text || '').trim(),
+    durationRange:defaults.timeMode==='training'?{min:10,max:120}:null,
     movementIntent: movementIntent(text),
     defaults: { minutes: defaults.minutes, place: defaults.place, focus: defaults.focus, readiness: defaults.readiness, targetRegions: defaults.targetRegions || [] },
     profile: { experience: state.profile.experience, homeEquipment: state.profile.equipment, bodyNotes: state.profile.bodyNotes || '' },
@@ -112,10 +113,11 @@ export function validateIntake(output, defaults) {
   checkRequestFields(output.request, errors);
   if (errors.length) return { ok: false, errors };
   const r = output.request, pick = (k, fallback) => r[k] ?? fallback;
+  if(defaults.timeMode==='training'&&(pick('minutes',defaults.minutes)<10||pick('minutes',defaults.minutes)>120))return {ok:true,status:'clarify',question:'正式训练支持 10～120 分钟。你想在这个范围内练多久？短时活动可以使用日常活动入口。'};
   const pureGoal=intent.hasGoals&&!intent.hasPain&&!/不适|不舒服|酸|僵|发紧/.test(raw);
   const focus = pick('focus',intent.targetRegions.length?'strength':defaults.focus);
   return { ok: true, status: 'ok', request: {
-    minutes: pick('minutes', defaults.minutes), place: pick('place', defaults.place), focus, readiness: pureGoal&&r.readiness==='discomfort'?defaults.readiness:pick('readiness', defaults.readiness),
+    ...(defaults.timeMode?{timeMode:defaults.timeMode}:{}),minutes: pick('minutes', defaults.minutes), place: pick('place', defaults.place), focus, readiness: pureGoal&&r.readiness==='discomfort'?defaults.readiness:pick('readiness', defaults.readiness),
     targetRegions: focus === 'strength' ? [...new Set(pick('targetRegions',intent.targetRegions.length?intent.targetRegions:defaults.targetRegions || []))] : [],
     equipment: r.equipment ?? null, preferredSystems: r.preferredSystems || [], avoid: r.avoid || [],
     bodyToday: pureGoal?'':r.bodyToday || '', preferences: r.preferences || '', userText: defaults.userText || '', painContextText:defaults.painContextText||''
@@ -138,6 +140,7 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
     today: localDate(now),
     request: {
       minutes: request.minutes, place: places[request.place], focus: goals[request.focus], readiness: READINESS[request.readiness],
+      durationRange:request.timeMode==='training'?{min:10,max:120}:null,
       targetRegions: (request.targetRegions || []).map(r => bodyRegions[r].label), preferredSystems: (request.preferredSystems || []).map(s => systems[s]),
       userText: request.userText || '', bodyToday: request.bodyToday || '', avoid: request.avoid || [], preferences: request.preferences || '',
       excludedPainRegions:excludedPainRegions(state.profile,request),painRule:painConstraintMessage(state.profile,request),
@@ -169,6 +172,7 @@ export function buildPlanInput(state, request, { now = new Date(), previousPlan 
 // refs：本次发给模型的知识条目 / 总结卡；模型在 knowledgeUsed 里点名的，只认这些。
 export function validatePlan(output, { request, profile, now = new Date(), uses = [], refs = [], method = null }) {
   const errors = [], warnings = [];
+  if(request.timeMode==='training'&&(!Number.isInteger(request.minutes)||request.minutes<10||request.minutes>120))return {ok:false,errors:['正式训练时长应为 10～120 分钟。'],warnings};
   const block=safetyBlock(profile,request);if(block)return {ok:true,status:'refer',reason:block,warnings};
   if (!output || !['ok', 'clarify', 'refer'].includes(output.status)) return { ok: false, errors: ['status 应为 ok / clarify / refer'], warnings };
   if (output.status === 'clarify') return output.question?.trim?.() ? { ok: true, status: 'clarify', question: output.question.trim(), warnings } : { ok: false, errors: ['clarify 需要 question'], warnings };

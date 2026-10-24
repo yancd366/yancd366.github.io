@@ -31,6 +31,10 @@ import {buildMediaBackup,parseMediaBackup,restoreMediaImages,MAX_MEDIA_BACKUP_BY
 import {validateActivityReview} from './activity-review.js';
 import {jobLookupExpired} from './media-policy.js';
 import {saveFollowAlong,followAlongFormHTML,followAlongRecommendations,followAlongRecommendationsHTML} from './follow-along.js';
+import {dailySettingsHTML,validateDaily,confirmDaily,dailyHTML} from './daily-practice.js';
+import {needsVisualReview} from './source-quality.js';
+import {saveSourceFeedback,sourceFeedbackHTML,feedbackFormHTML} from './source-feedback.js';
+import {buildSourceBriefInput,buildSourceDetailInput,validateSourceBrief,evidenceSignature,sourceBriefHTML} from './source-brief.js';
 const $=s=>document.querySelector(s);
 const activityById=id=>activities.find(a=>a.id===id);
 let storageError=false,state,lastStored=null;let importDraft=null;
@@ -59,6 +63,7 @@ function commit(change){
   catch{toast('保存失败：浏览器空间不足或存储不可用。请导出备份。');return false;}
 }
 function render(){
+  if(!state.draft)request={...request,timeMode:'training',minutes:Math.max(10,Math.min(120,Number(request.minutes)||20))};
   const content={today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeDetailId?knowledgeDetailHTML(state,knowledgeDetailId):knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind,knowledgeContentType),body:()=>bodyHTML(state)}[page]();
   $('#app').innerHTML=shell(page,state,content,storageError);
   if(page==='knowledge'&&!knowledgeDetailId)enhanceKnowledgeFilters();
@@ -153,7 +158,7 @@ function detail(id){
 }
 // ---------- AI ----------
 // The server only adds the prompt and key; context and validation stay here, next to the local data.
-async function askAI(skill,input,validate){
+async function askAI(skill,input,validate,{repair=true}={}){
   if(!ensureAI())throw new Error('请先启用 AI 并确认数据发送范围。');
   if(navigator.onLine===false)throw new AINetworkError('当前没有网络。');
   const cfg=directConfig(state),model=organizeModel(state,skill);
@@ -162,7 +167,7 @@ async function askAI(skill,input,validate){
     ?async repair=>(await callDirect(skill,directMessages(skill,input,repair),model?{...cfg,model}:cfg,{timeoutMs:model?180000:90000})).reply
     :async repair=>{let res;try{res=await fetch(`/api/ai/${skill}`,{method:'POST',headers:{'Content-Type':'application/json','X-Xundong-Consent':aiState.consentId},body:JSON.stringify({input,repair,model})});}catch{throw new AINetworkError();}const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||`AI 服务出错（${res.status}）`);return data.reply;};
   let reply=await call(),result=validate(reply);
-  if(!result.ok){reply=await call({reply,errors:result.errors});result=validate(reply);}
+  if(!result.ok&&repair){reply=await call({reply,errors:result.errors});result=validate(reply);}
   if(!result.ok)throw new Error(`AI 的结果没有通过校验：${result.errors.slice(0,2).join('；')}。可以换个说法重试，或用规则安排。`);
   return result;
 }
@@ -300,13 +305,16 @@ async function pollIngest(captureId){
   let terminal=false;
   try{
     const result=await readIngestJob(c.ingestJobId,cfg);
-    if(result.status==='queued')return;
+    if(result.status==='queued'){
+      if(result.sourceBrief&&JSON.stringify(c.sourceBrief)!==JSON.stringify(result.sourceBrief)&&commit(s=>applyIngestResult(s,captureId,result)))render();
+      return;
+    }
     terminal=true;
     if(commit(s=>applyIngestResult(s,captureId,result))){
       render();
       if(result.status==='complete'){
         const saved=state.captures.find(c=>c.id===captureId);
-        toast(saved?.cardDraft?'知识卡草稿已准备好，请核对。':'视频已解析，可稍后整理知识卡。');
+        toast(saved?.cardDraft?'知识卡草稿已准备好，请核对。':needsVisualReview(saved)?'画面解析未完成，现有字幕疑似歌词，请重新读取画面。':saved?.transcript?.model==='platform-subtitle'?'仅取得平台字幕，尚未完成画面理解。':'来源材料已保存，可稍后核对整理。');
         if(saved?.cardDraft&&page==='knowledge'&&knowledgeDetailId===saved.knowledgeId&&!$('#sheet').open)reviewIngestDraft(captureId);
       }else toast(result.message||'暂时无法自动整理，链接仍在收件箱。');
     }
@@ -325,6 +333,10 @@ function knowledgeConfirmDialog(){
   const evidenceLabel=claim=>claim.evidenceSource==='workflow_model'?'AI 画面描述（待核对）':claim.evidenceKind==='user_summary'?'你自己写的视频总结':claim.evidenceKind==='asr_transcript'?'视频语音':claim.evidenceKind==='frame_ocr'?'画面字幕':claim.evidenceKind==='keyframe_description'?'画面解析':'你提供的文字';
   showModal('核对知识卡',`${warnings.length?`<div class="notice">${warnings.map(w=>`<p class="small">${esc(w)}</p>`).join('')}</div>`:''}<p class="muted">每条观点都附有视频语音、画面或字幕依据。AI 识别可能有误，请回看原视频后保存。</p><form id="knowledge-confirm-form"><label>标题<input name="title" required maxlength="120" value="${esc(card.title)}"></label><label>摘要（可选）<textarea name="summary" maxlength="700">${esc(card.summary||'')}</textarea></label>${card.claims.map((claim,n)=>`<fieldset class="log-item"><label class="checkbox-line"><input type="checkbox" name="keep_${n}" checked> 保留第 ${n+1} 条</label><label>整理后的观点<textarea name="claim_${n}" required maxlength="500">${esc(claim.text)}</textarea></label><p class="small muted">${evidenceLabel(claim)}${claim.startMs!=null?` · ${Math.floor(claim.startMs/60000)}:${String(Math.floor(claim.startMs/1000)%60).padStart(2,'0')}`:''}：「${esc(claim.evidenceQuote)}」</p></fieldset>`).join('')}<fieldset><legend>关联现有动作（可选）</legend>${card.activityLinks.map((link,n)=>`<div class="link-row"><label class="checkbox-line"><input type="checkbox" name="linkKeep_${n}" checked> <select name="link_${n}">${activities.map(a=>`<option value="${a.id}" ${a.id===link.activityId?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label><span class="small muted">原文：「${esc(link.evidenceQuote)}」</span><div class="field-row"><label>用途${link.use?'<span class="small muted">（AI 按原文建议）</span>':''}<select name="linkUse_${n}"><option value="">不记用途</option>${Object.entries(USES).map(([v,l])=>`<option value="${v}" ${link.use===v?'selected':''}>${l}</option>`).join('')}</select></label><label>部位<select name="linkRegion_${n}"><option value="">不指定</option>${Object.entries(bodyRegions).map(([v,r])=>`<option value="${v}" ${link.region===v?'selected':''}>${esc(r.label)}</option>`).join('')}</select></label></div><input type="hidden" name="linkNote_${n}" value="${esc(link.note||'')}"></div>`).join('')||'<p class="small muted">AI 没有找到可由原文核对的现有动作。</p>'}</fieldset><label>主题（可选，用顿号或逗号分隔）<input name="topics" maxlength="80" value="${esc((card.topics||[]).join('、'))}" placeholder="例如：髋关节热身、核心训练" list="topic-options"></label><datalist id="topic-options">${corpusTopics(state).map(t=>`<option value="${esc(t.topic)}">`).join('')}</datalist><label class="checkbox-line"><input type="checkbox" name="useInPlanning" ${card.claims.some(c=>c.evidenceSource==='workflow_model')?'':'checked'}>作为长期知识，安排训练时可以参考${card.claims.some(c=>c.evidenceSource==='workflow_model')?'（含 AI 画面描述，建议核对后再打开）':''}</label><p class="helper left">这张卡来自你收藏的内容，观点未经专业审核。即使允许参考，也不能绕过当天的安全、器械和时间限制。</p><button class="primary full" type="submit">保存到个人知识库 ${icon('check')}</button></form>`);
   $('#knowledge-confirm-form .log-item')?.insertAdjacentHTML('beforebegin',knowledgeTypeReviewHTML(card));
+  const brief=card.sourceBrief;
+  if(brief)$('#knowledge-confirm-form').insertAdjacentHTML('afterbegin',`<fieldset class="brief-review"><legend>先看内容简介</legend>${sourceBriefHTML(brief)}<label>修改简介<textarea name="briefSummary" maxlength="300">${esc(brief.summary)}</textarea></label></fieldset>`);
+  const author=card.authorStatements||[];
+  if(author.length)$('#knowledge-confirm-form button[type=submit]').insertAdjacentHTML('beforebegin',`<fieldset class="author-review"><legend>作者说法 · 逐条确认</legend><p class="helper left">记录来源主张，不是效果验证，也不自动送入训练安排。</p>${author.map((a,n)=>`<div class="log-item"><label class="checkbox-line"><input name="authorKeep_${n}" type="checkbox" checked>保留：${esc(a.subject||a.kind)}</label><label>整理后的作者说法<textarea name="authorText_${n}" maxlength="300">${esc(a.statement)}</textarea></label><label>原文明确的条件（可选）<textarea name="authorCondition_${n}" maxlength="200">${esc(a.conditions)}</textarea></label><details><summary>原文依据</summary><blockquote>${esc(a.evidenceQuote)}</blockquote></details></div>`).join('')}</fieldset>`);
 }
 function reviewIngestDraft(captureId){
   const capture=state.captures.find(c=>c.id===captureId);
@@ -337,12 +349,27 @@ function analyzeCapture(captureId,{existingOnly=false}={}){
   const capture=(state.captures||[]).find(c=>c.id===captureId);
   if(!capture)return toast('找不到这条分享，请刷新后重试。');
   if(!existingOnly&&preferVideoIngest(capture))return startIngest(captureId,true);
+  if(needsVisualReview(capture)&&!buildKnowledgeImportInput(state,capture).evidence.length){toast('现有文字疑似歌词，不能据此整理动作。请重新解析画面或补充来源正文。');return;}
   if(!captureHasEvidence(capture)){captureDialog(captureId);toast('先补充文案、字幕或截图中的文字，才能整理。');return;}
   if(!ensureAI())return;
   withBusy(async()=>{
-    const r=await askAI('knowledge-import',buildKnowledgeImportInput(state,capture),x=>validateKnowledgeImport(x,capture));
+    const input=buildKnowledgeImportInput(state,capture);
+    if(!capture.book){input.catalog=[];input.limits.maxActivityLinks=0;}
+    let brief=capture.sourceBrief;
+    if(!brief||brief.evidenceSignature!==evidenceSignature(input.evidence)||!validateSourceBrief({status:'ok',brief},input.evidence).ok){
+      toast('第一步：生成简介与分类…');
+      const overview=await askAI('source-brief',buildSourceBriefInput(input),x=>validateSourceBrief(x,input.evidence),{repair:false});
+      if(overview.status==='clarify'){toast(overview.question);return;}
+      brief=overview.brief;
+      if(!commit(s=>{s.captures.find(c=>c.id===captureId).sourceBrief=brief;}))return;
+      render();
+    }
+    toast('简介已生成，第二步：按内容类型整理观点和作者说法…');
+    const r=await askAI('knowledge-import',buildSourceDetailInput(input,brief),x=>validateKnowledgeImport(x,capture),{repair:false});
     if(r.status==='clarify'){pendingKnowledge={captureId,card:null};showModal('还差一点内容',`<p>${esc(r.question)}</p><button class="primary full" data-edit-capture="${esc(captureId)}">补充来源文字</button>`);return;}
-    pendingKnowledge={captureId,card:r.card,warnings:r.warnings};knowledgeConfirmDialog();
+    const card={...r.card,sourceBrief:brief};
+    if(!commit(s=>{s.captures.find(c=>c.id===captureId).cardDraft=card;}))return;
+    pendingKnowledge={captureId,card,warnings:r.warnings};knowledgeConfirmDialog();
   });
 }
 // 创作者方法卡：AI 只把这位创作者已确认卡片里的观点归纳成草稿；用户逐条确认后才写入 creatorProfiles。
@@ -540,6 +567,7 @@ function currentFollowRequest(){
   return p?.request||{...request,userText:aiState.text||request.userText||''};
 }
 function refreshFollowAlong(){
+  const daily=$('#daily-slot');if(daily)daily.innerHTML=dailyHTML(state,currentFollowRequest());
   const slot=$('#follow-along-slot');if(slot)slot.innerHTML=state.draft?.startedAt?'':followAlongRecommendationsHTML(state,currentFollowRequest());
 }
 document.addEventListener('click',event=>{
@@ -551,11 +579,18 @@ document.addEventListener('click',e=>{
   const el=e.target.closest('button');if(!el)return;
   if(el.dataset.openKnowledge){openKnowledge(el.dataset.openKnowledge);return;}
   if(el.dataset.action==='knowledge-back'){backToKnowledge();return;}
+  if(el.dataset.feedbackOpen){showModal('我的实践与反馈',sourceFeedbackHTML(state,el.dataset.feedbackOpen));return;}
+  if(el.dataset.feedbackNew){showModal('写一次实践反馈',feedbackFormHTML(el.dataset.feedbackNew));return;}
+  if(el.dataset.feedbackEdit){const x=state.sourceFeedback?.find(x=>x.id===el.dataset.feedbackEdit);if(x)showModal('编辑实践反馈',feedbackFormHTML(x.knowledgeId,x));return;}
+  if(el.dataset.feedbackDelete){const x=state.sourceFeedback?.find(x=>x.id===el.dataset.feedbackDelete);if(x)showModal('删除这条反馈？',`<p>只删除这次个人反馈，不删除收藏和训练记录。</p><button class="primary full" data-feedback-confirm-delete="${esc(x.id)}">确认删除反馈</button>`);return;}
+  if(el.dataset.feedbackConfirmDelete){const x=state.sourceFeedback?.find(x=>x.id===el.dataset.feedbackConfirmDelete);if(x&&commit(s=>{s.sourceFeedback=s.sourceFeedback.filter(v=>v.id!==x.id);})){render();showModal('我的实践与反馈',sourceFeedbackHTML(state,x.knowledgeId));toast('已删除这条反馈。');}return;}
   if(el.dataset.followEdit){
     const k=state.knowledge.find(k=>k.id===el.dataset.followEdit),c=state.captures.find(c=>c.knowledgeId===el.dataset.followEdit);
     if(!k||k.status!=='saved')return toast('请先核对并保存知识卡，再确认跟练资料。');
     showModal('确认跟练资料',followAlongFormHTML(k,c));return;
   }
+  if(el.dataset.action==='daily-settings'){showModal('日常活动偏好',dailySettingsHTML(state));return;}
+  if(el.dataset.dailyDone){const a=activityById(el.dataset.dailyDone);showModal('确认日常活动',`<form id="daily-done-form" data-id="${esc(a.id)}"><h3>${esc(a.name)}</h3><label>实际时长（分钟，可留空）<input name="minutes" type="number" min="0.01" max="1440" step="0.01" placeholder="按实际填写，不按推荐时长自动记"></label><label>感受（可选）<textarea name="note" maxlength="1000"></textarea></label><label class="checkbox-line"><input name="confirmed" type="checkbox" required>我确认实际完成了这个项目</label><button class="primary full" type="submit">保存完成记录</button></form>`);return;}
   if(el.dataset.manualActivity){
     const capture=state.captures.find(c=>c.id===el.dataset.manualActivity);if(!capture)return toast('找不到这条来源。');
     const type=el.dataset.sourceType;let segment;
@@ -590,6 +625,10 @@ document.addEventListener('click',e=>{
   if(el.dataset.reviewIngest){reviewIngestDraft(el.dataset.reviewIngest);return;}
   if(el.dataset.editCapture){captureDialog(el.dataset.editCapture);return;}
   if(el.dataset.autoIngest){startIngest(el.dataset.autoIngest,el.dataset.forceIngest==='true');return;}
+  if(el.dataset.libraryGroup){filters={...filters,group:el.dataset.libraryGroup,phase:'all',region:'all',system:'all',category:'all',place:'all'};render();return;}
+  if(el.dataset.action==='clear-library'){filters={search:'',category:'all',system:'all',place:'all',personal:'all',group:'all',phase:'all',region:'all'};render();return;}
+  if(el.dataset.libraryPhase){filters.phase=el.dataset.libraryPhase;render();return;}
+  if(el.dataset.libraryRegion){filters.region=el.dataset.libraryRegion;render();return;}
   if(el.dataset.personal){filters.personal=el.dataset.personal;render();return;}
   if(el.dataset.nav){navigate(el.dataset.nav);return;}
   if(el.dataset.detail){detail(el.dataset.detail);return;}
@@ -686,6 +725,7 @@ document.addEventListener('click',e=>{
 });
 document.addEventListener('change',e=>{if(e.target.matches('[data-reference-mode]')){const mode=['auto','selected','none'].includes(e.target.value)?e.target.value:'auto';if(commit(s=>{s.settings.planningReferences={mode,selectedIds:s.settings.planningReferences?.selectedIds||[]};s.settings.useCorpus=mode!=='none';})){render();toast(mode==='auto'?'会按今天情况自动挑选资料。':mode==='selected'?'本次只参考你勾选的资料。':'这次安排不参考知识库。');}return;}if(e.target.matches('[data-reference-id]')){const id=e.target.dataset.referenceId,on=e.target.checked;if(commit(s=>{const p=s.settings.planningReferences||{mode:'auto',selectedIds:[]},ids=new Set(p.selectedIds||[]);on?ids.add(id):ids.delete(id);s.settings.planningReferences={...p,mode:'selected',selectedIds:[...ids]};s.settings.useCorpus=true;})){render();}else render();return;}if(e.target.id==='method-card'||e.target.id==='method-mode'){const id=$('#method-card')?.value||null,mode=$('#method-mode')?.value||'inspiration';if(commit(s=>s.settings.methodPreference=id?{creatorProfileId:id,mode}:null)){render();toast(id?`下次 AI 安排会按「${state.creatorProfiles.find(p=>p.id===id)?.title}」· ${METHOD_MODES[mode].label}。`:'不按创作者方法安排。');}return;}if(e.target.dataset.activityPlanning){const id=e.target.dataset.activityPlanning,use=e.target.value;if(commit(s=>setActivityPlanning(s,id,use))){render();detail(id);toast(use==='allowed'?'之后的安排可以自动选到它了。':'改为仅手动使用。');}return;}if(e.target.dataset.topicPlanning){const id=e.target.dataset.topicPlanning,on=e.target.checked;if(commit(s=>setTopicPlanning(s,id,on))){render();toast(on?'这张主题总结会参与安排。':'这张主题总结不再参与安排。');}else render();return;}if(e.target.id==='use-corpus'){const on=e.target.checked;if(commit(s=>{s.settings.useCorpus=on;s.settings.planningReferences={mode:on?'auto':'none',selectedIds:s.settings.planningReferences?.selectedIds||[]};}))toast(on?'安排时会参考你的知识库。':'这之后的安排不参考知识库。');return;}if(e.target.matches('[data-ai-organize-model]')){const m=ORGANIZE_MODELS.includes(e.target.value)?e.target.value:null;if(commit(s=>s.settings.aiOrganizeModel=m))toast(m?`整理类任务将使用 ${m}。`:'整理类任务改回和安排用同一个模型。');return;}if(e.target.dataset.methodPlanning){const id=e.target.dataset.methodPlanning,allowed=e.target.checked;if(commit(s=>setMethodPlanning(s,id,allowed))){render();toast(allowed?'已允许这张方法卡参与安排。':'已取消用于安排。');}else render();return;}if(e.target.dataset.abilityUse){const id=e.target.dataset.abilityUse,use=e.target.value,a=state.assessments.find(a=>a.id===id);if(a&&allowedUses(a).includes(use)&&commit(s=>s.assessments.find(a=>a.id===id).recommendationUse=use)){render();toast(use==='gentle_preference'?'已设为温和参考，会参与之后的安排。':'已更新用途。');}else render();return;}if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness'){request.readiness=e.target.value;refreshFollowAlong();}if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
 document.addEventListener('input',e=>{if(e.target.matches?.('#capture-form [name=shareText]'))showCaptureDetection();if(e.target.id==='ai-text'){aiState.text=e.target.value;refreshFollowAlong();}if(e.target.id==='activity-search'){const pos=e.target.selectionStart;filters.search=e.target.value;render();const input=$('#activity-search');input.focus();input.setSelectionRange(pos,pos);}});
+document.addEventListener('change',e=>{if(e.target.id==='training-minutes'){const minutes=Number(e.target.value);if(!Number.isInteger(minutes)||minutes<10||minutes>120){e.target.value=request.minutes;toast('正式训练请输入 10～120 的整数分钟。');return;}request={...request,minutes,timeMode:'training'};render();}});
 document.addEventListener('change',e=>{
   const key=e.target.dataset.freeConfig,roleId=e.target.dataset.freeRole;
   if(!isFreeWorkout(state.draft)||!key&&!roleId)return;
@@ -703,6 +743,10 @@ document.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.target,f=new FormData(form);
   try{
     let ok=false;
+    if(form.id==='source-feedback-form'){
+      const id=form.dataset.knowledge;
+      if(commit(s=>saveSourceFeedback(s,id,{...Object.fromEntries(f),id:form.dataset.id||null}))){render();showModal('我的实践与反馈',sourceFeedbackHTML(state,id));toast('反馈已保存，没有增加训练次数。');}return;
+    }
     if(form.id==='free-start-form'){
       if(state.draft)throw new Error('已有进行中的训练，请先保存或退出。');
       const plan=createFreeWorkout(Object.fromEntries(f),state.profile,state.assessments);
@@ -749,6 +793,12 @@ document.addEventListener('submit',async e=>{
       }
       if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(!oldId&&preferVideoIngest(capture)){startIngest(captureId);}else if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。配置自动视频整理后可一键转写。');}return;
     }
+    if(form.id==='daily-settings-form'){
+      const activityIds=f.getAll('activityIds'),targets={};for(const id of activityIds){const value=String(f.get(`target_${id}`)||'').trim();if(value)targets[id]=Number(value);}
+      const cfg=validateDaily({version:1,mode:f.get('mode'),place:f.get('place'),activityIds,focusId:activityIds.includes(f.get('focusId'))?f.get('focusId'):null,targets,routineAck:Boolean(f.get('routineAck'))});
+      ok=commit(s=>s.dailyPractice=cfg);if(ok){$('#sheet').close();render();toast('日常偏好已保存；没有自动生成完成记录。');}return;
+    }
+    if(form.id==='daily-done-form'){ok=commit(s=>confirmDaily(s,form.dataset.id,{minutes:f.get('minutes'),note:f.get('note'),confirmed:Boolean(f.get('confirmed'))},new Date(),currentFollowRequest()));if(ok){$('#sheet').close();render();toast('已记录这次实际完成的日常活动。');}return;}
     if(form.id==='follow-along-form'){
       try{
         const input={description:f.get('description'),isFollowAlong:Boolean(f.get('isFollowAlong')),primaryRegions:f.getAll('primaryRegions'),secondaryRegions:f.getAll('secondaryRegions'),places:f.getAll('places'),equipment:f.getAll('equipment'),equipmentKnown:Boolean(f.get('equipmentKnown')),level:f.get('level'),minutes:f.get('minutes'),recommend:Boolean(f.get('recommend'))};
@@ -771,7 +821,9 @@ document.addEventListener('submit',async e=>{
       if(!claims.length)throw new Error('至少保留一条有来源依据的观点。');
       const activityLinks=pendingKnowledge.card.activityLinks.flatMap((link,n)=>f.get(`linkKeep_${n}`)?[{activityId:String(f.get(`link_${n}`)||''),use:f.get(`linkUse_${n}`)||null,region:f.get(`linkRegion_${n}`)||'',note:f.get(`linkNote_${n}`)||'',evidenceId:link.evidenceId,evidenceQuote:link.evidenceQuote}]:[]);
       const planPoints=(pendingKnowledge.card.planPoints||[]).flatMap((point,n)=>f.get(`planKeep_${n}`)?[{kind:f.get(`planKind_${n}`),text:String(f.get(`planText_${n}`)||'').trim(),evidenceId:point.evidenceId,evidenceQuote:point.evidenceQuote}]:[]);
-      const checked=validateKnowledgeImport({status:'ok',card:{title:f.get('title'),summary:f.get('summary'),topics:normalizeTopics(f.get('topics')),contentType:f.get('contentType'),claims,activityLinks,planPoints}},capture);
+      const sourceBrief=pendingKnowledge.card.sourceBrief?{...pendingKnowledge.card.sourceBrief,summary:String(f.get('briefSummary')||'').trim()}:null;
+      const authorStatements=(pendingKnowledge.card.authorStatements||[]).flatMap((a,n)=>f.get(`authorKeep_${n}`)?[{...a,statement:String(f.get(`authorText_${n}`)||'').trim(),conditions:String(f.get(`authorCondition_${n}`)||'').trim()}]:[]);
+      const checked=validateKnowledgeImport({status:'ok',card:{title:f.get('title'),summary:f.get('summary'),topics:normalizeTopics(f.get('topics')),contentType:f.get('contentType'),claims,activityLinks,planPoints,...(sourceBrief?{sourceBrief}:{}),authorStatements}},capture);
       if(!checked.ok)throw new Error(checked.errors.slice(0,2).join('；'));
       if(checked.warnings.length)throw new Error(`${checked.warnings[0]}可以换一个动作，或取消勾选它再保存。`);
       ok=commit(s=>{const k=applyKnowledgeCard(s,pendingKnowledge.captureId,checked.card);k.useInPlanning=Boolean(f.get('useInPlanning'));});
@@ -920,7 +972,7 @@ if('serviceWorker' in navigator && window.isSecureContext && location.protocol.s
   })).then(ready=>showOfflineStatus(ready?'离线文件已准备好：本地安排与记录可离线使用，AI 需要联网。':'离线文件尚未准备完整。请联网重新打开页面后再试。'))
     .catch(()=>showOfflineStatus('离线缓存未启用，请保持联网。'));
 }
-document.addEventListener('toggle',e=>{if(e.target.id==='planning-options')aiState.optionsOpen=e.target.open;if(e.target.matches?.('.douyin-image-evidence[open],.live-photo-videos[open]'))hydrateImages(e.target);},true);
+document.addEventListener('toggle',e=>{if(e.target.isConnected&&e.target.matches?.('.library-advanced'))filters.expanded=e.target.open;if(e.target.isConnected&&e.target.id==='planning-options')aiState.optionsOpen=e.target.open;if(e.target.matches?.('.douyin-image-evidence[open],.live-photo-videos[open]'))hydrateImages(e.target);},true);
 document.addEventListener('change',event=>{
   const el=event.target,form=el.closest('#activity-intake-form');if(!form)return;
   if(el.hasAttribute('data-review-mode')){
@@ -937,4 +989,4 @@ document.addEventListener('input',event=>{
   const select=el.closest('form')?.querySelector(`[name="match_${el.dataset.reviewSearch}"]`);if(!select)return;
   const query=el.value.trim().toLowerCase();for(const option of select.options)option.hidden=Boolean(query&&option.value&&!option.selected&&!option.dataset.search?.includes(query));
 });
-document.addEventListener('change',async e=>{if(e.target.id!=='backup-file')return;importDraft=null;const preview=$('#import-preview');if(preview)preview.textContent='';try{const file=e.target.files[0];if(!file)return;if(file.size>MAX_MEDIA_BACKUP_BYTES)throw new Error('请使用 75 MB 以内的含图备份；纯文字仍限 5 MB。');const parsed=parseMediaBackup(await file.text());importDraft=parsed;preview.innerHTML=`<p>备份含 ${parsed.state.sessions.length} 次训练、${parsed.state.notes.length} 条心得、${parsed.state.assessments.length} 条能力观察、${parsed.images.length} 张图片文件。</p><p class="small muted">纯文字 JSON 不含图片；图片文件会在你确认后写入本机，不覆盖同 ID 的已有图片。</p><form id="import-confirm-form"><label class="checkbox-line"><input type="checkbox" name="profile">同时用备份中的个人档案更新本机档案</label><button class="primary" type="submit">确认合并</button></form>`;}catch(err){toast(err.message);}});
+document.addEventListener('change',async e=>{if(e.target.id!=='backup-file')return;importDraft=null;const preview=$('#import-preview');if(preview)preview.textContent='';try{const file=e.target.files[0];if(!file)return;if(file.size>MAX_MEDIA_BACKUP_BYTES)throw new Error('请使用 75 MB 以内的含图备份；纯文字仍限 5 MB。');const parsed=parseMediaBackup(await file.text());importDraft=parsed;preview.innerHTML=`<p>备份含 ${parsed.state.sessions.length} 次训练、${parsed.state.notes.length} 条心得、${parsed.state.assessments.length} 条能力观察、${parsed.images.length} 张图片文件。</p><p class="small muted">纯文字 JSON 不含图片；图片文件会在你确认后写入本机，不覆盖同 ID 的已有图片。</p><form id="import-confirm-form"><label class="checkbox-line"><input type="checkbox" name="profile">同时更新个人档案与日常偏好（整套功法需重新确认）</label><button class="primary" type="submit">确认合并</button></form>`;}catch(err){toast(err.message);}});

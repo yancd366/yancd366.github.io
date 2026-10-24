@@ -1,6 +1,7 @@
 // Browser-side client for the optional cloud video ingestion service.
 // Its personal access token stays on this device and is removed from JSON backups.
-import { validateKnowledgeImport } from './knowledge.js';
+import { validateKnowledgeImport,captureEvidence } from './knowledge.js';
+import {validateSourceBrief} from './source-brief.js';
 import { PREVIEW_RETENTION_DAYS } from './media-policy.js';
 export const allowedIngestBase=value=>{
   try{
@@ -79,6 +80,11 @@ export async function readIngestJob(jobId,config,options){
 export function applyIngestResult(state,captureId,result,now=new Date()){
   const capture=state.captures.find(c=>c.id===captureId);
   if(!capture)throw new Error('找不到原始分享。');
+  if(result.status==='queued'&&result.sourceBrief){
+    const checked=validateSourceBrief({status:'ok',brief:result.sourceBrief},Array.isArray(result.briefEvidence)?result.briefEvidence:[]);
+    if(checked.ok&&checked.status==='ok')capture.sourceBrief=checked.brief;
+    return capture;
+  }
   if(typeof result.noteText==='string'&&result.noteText.trim()&&!String(capture.shareText||'').trim())capture.shareText=result.noteText.trim().slice(0,8000);
   if(result.status==='failed'){
     capture.ingestStatus='failed';capture.ingestError=String(result.message||'暂时无法自动整理。').slice(0,1000);capture.ingestWarning='';capture.cardDraft=null;capture.videoEvidence=[];capture.imageEvidence=[];capture.liveVideoEvidence=[];capture.actionSegments=[];
@@ -106,11 +112,14 @@ export function applyIngestResult(state,captureId,result,now=new Date()){
     capture.ingestStatus='transcribed';capture.ingestError='';capture.previewRetentionDays=result.previewRetentionDays===PREVIEW_RETENTION_DAYS?PREVIEW_RETENTION_DAYS:2;
     capture.lastIngestAttempt={id:String(result.diagnostics?.attemptId||capture.ingestJobId||'').slice(0,80),pipelineVersion:String(result.diagnostics?.pipelineVersion||'').slice(0,80),stage:'complete',reason:'',updatedAt:result.updatedAt||now.toISOString()};
     capture.resolvedSource={provider:String(result.source?.provider||'').slice(0,40),platform:String(result.source?.platform||'').slice(0,40),contentId:String(result.source?.contentId||'').slice(0,100),title:String(result.source?.title||'').slice(0,180),creatorName:String(result.source?.creatorName||'').slice(0,120),description:String(result.source?.description||'').slice(0,2000),durationMs:Number(result.source?.durationMs)||null,retrievedAt:result.source?.retrievedAt||now.toISOString()};
-    if(hasTranscript)capture.transcript={source:'asr',model:String(result.transcript.model||'').slice(0,100),text:result.transcript.text.trim().slice(0,30000),segments:Array.isArray(result.transcript.segments)?result.transcript.segments.slice(0,150).map(s=>({startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs),text:String(s.text||'').slice(0,1000)})):[],createdAt:result.transcript.createdAt||now.toISOString()};
+    if(hasTranscript)capture.transcript={source:result.transcript.source==='subtitle'||result.transcript.model==='platform-subtitle'?'subtitle':'asr',model:String(result.transcript.model||'').slice(0,100),text:result.transcript.text.trim().slice(0,30000),segments:Array.isArray(result.transcript.segments)?result.transcript.segments.slice(0,150).map(s=>({startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs),text:String(s.text||'').slice(0,1000)})):[],createdAt:result.transcript.createdAt||now.toISOString()};
     if(!hasTranscript)capture.transcript=null;
     capture.videoEvidence=videoEvidence;
     capture.imageEvidence=imageEvidence;
     capture.liveVideoEvidence=liveVideoEvidence;
+    const overview=result.sourceBrief||result.cardDraft?.sourceBrief;
+    const brief=overview?validateSourceBrief({status:'ok',brief:overview},captureEvidence(capture)):null;
+    capture.sourceBrief=brief?.ok&&brief.status==='ok'?brief.brief:null;
     const actionSegments=Array.isArray(result.actionSegments)?result.actionSegments.slice(0,10).flatMap((item,n)=>{
       const startMs=Number(item?.startMs),endMs=Number(item?.endMs),frameStartMs=Number(item?.frame?.startMs),ref=item?.thumbnail;
       if(!Number.isFinite(startMs)||startMs<0||!Number.isFinite(endMs)||endMs<startMs)return [];

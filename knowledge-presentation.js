@@ -1,4 +1,5 @@
 // Display-only state, derived from the existing records; never rewrites data.
+import {needsVisualReview} from './source-quality.js';
 export const KNOWLEDGE_STATES={
   pending:{label:'待整理',action:'开始整理'},
   processing:{label:'整理中',action:'查看进度'},
@@ -9,7 +10,7 @@ export const KNOWLEDGE_STATES={
 const platforms=new Set(['douyin','xiaohongshu','bilibili']);
 export function knowledgePresentation(knowledge,capture){
   const saved=knowledge.status==='saved',manual=capture?.ingestErrorCode==='too_long'||Boolean(capture?.manualSummary);
-  const id=saved?'saved':capture?.ingestStatus==='queued'?'processing':capture?.cardDraft?'review':capture?.ingestStatus==='failed'&&!manual?'attention':'pending';
+  const id=saved?'saved':capture?.ingestStatus==='queued'?'processing':capture?.cardDraft?'review':needsVisualReview(capture)||capture?.ingestStatus==='failed'&&!manual?'attention':'pending';
   const updated=saved?(capture?.ingestStatus==='queued'?'正在更新，原卡仍可查看':capture?.cardDraft?'有新草稿待核对':capture?.ingestStatus==='failed'&&!manual?'本次更新未完成，原卡已保留':''):'';
   const step=saved?3:id==='review'?2:1;
   return {id,...KNOWLEDGE_STATES[id],action:manual&&!saved?'自己整理':KNOWLEDGE_STATES[id].action,notice:updated,
@@ -22,6 +23,9 @@ export function cleanKnowledgeTitle(value){
 }
 export function knowledgeExcerpt(knowledge,capture){
   const p=knowledgePresentation(knowledge,capture);
+  const brief=knowledge.status==='saved'?knowledge.sourceBrief:capture?.sourceBrief||capture?.cardDraft?.sourceBrief;
+  if(brief?.summary)return brief.summary.slice(0,130);
+  if(p.id!=='saved'&&needsVisualReview(capture))return '视觉解析未完成，目前只有疑似歌词文字。请重新读取画面。';
   if(p.id==='processing')return '正在读取来源内容，整理完成后可核对入库。';
   if(p.id==='review')return String(capture.cardDraft.summary||'草稿已准备好，核对观点与来源后即可入库。').replace(/\s+/g,' ').slice(0,130);
   if(p.id==='attention')return '整理暂未完成，原始链接已保留。打开详情查看处理方式。';

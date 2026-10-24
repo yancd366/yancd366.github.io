@@ -3,6 +3,8 @@
 import { activities } from './catalog.js';
 import { normalizeTopics, entryKind, corpusTopics } from './corpus.js';
 import { normalizeUse, replaceKnowledgeUses, dropKnowledgeUses } from './activity-uses.js';
+import {transcriptQuality} from './source-quality.js';
+import {validateAuthorStatements,validateSourceBrief} from './source-brief.js';
 
 const uid=()=>globalThis.crypto?.randomUUID?.()||`knowledge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const clip=(value,max)=>String(value||'').trim().slice(0,max);
@@ -97,7 +99,7 @@ export function captureEvidence(capture){
   if(capture?.shareText?.trim())pieces.push({id:'user-text',kind:'user_text',text:clip(capture.shareText,8000)});
   if(capture?.manualSummary?.trim())pieces.push({id:'user-summary',kind:'user_summary',text:clip(capture.manualSummary,2000),evidenceSource:'user_provided'});
   const transcript=capture?.transcript;
-  if(transcript?.text?.trim()){
+  if(transcript?.text?.trim()&&transcriptQuality(transcript.text).status!=='suspected_music'){
     const segments=Array.isArray(transcript.segments)?transcript.segments.filter(s=>s?.text?.trim()):[];
     if(segments.length)segments.slice(0,150).forEach((s,n)=>pieces.push({id:`asr:${n}`,kind:'asr_transcript',text:clip(s.text,1000),startMs:Number(s.startMs)||0,endMs:s.endMs==null?null:Number(s.endMs)}));
     else pieces.push({id:'asr:full',kind:'asr_transcript',text:clip(transcript.text,30000),startMs:null,endMs:null});
@@ -106,11 +108,12 @@ export function captureEvidence(capture){
   if(Array.isArray(capture?.videoEvidence))capture.videoEvidence.slice(0,80).forEach((item,n)=>{
     const kind=String(item?.kind||'');
     const text=clip(item?.text,1000),startMs=Number(item?.startMs),endMs=Number(item?.endMs);
-    if(visualKinds.has(kind)&&text&&Number.isFinite(startMs)&&startMs>=0&&Number.isFinite(endMs)&&endMs>=startMs)pieces.push({id:`vision:${n}`,kind,text,startMs:Math.round(startMs),endMs:Math.round(endMs),evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser'});
+    if(visualKinds.has(kind)&&text&&!(kind==='asr_transcript'&&transcriptQuality(text).status==='suspected_music')&&Number.isFinite(startMs)&&startMs>=0&&Number.isFinite(endMs)&&endMs>=startMs)pieces.push({id:`vision:${n}`,kind,text,startMs:Math.round(startMs),endMs:Math.round(endMs),evidenceSource:item?.evidenceSource==='workflow_model'?'workflow_model':'parser'});
   });
   if(Array.isArray(capture?.imageEvidence))capture.imageEvidence.slice(0,12).forEach((item,n)=>{
     const imageIndex=Number(item?.imageIndex),text=clip(item?.text,1200);
     if(Number.isInteger(imageIndex)&&imageIndex>=0&&imageIndex<12&&text)pieces.push({id:`image:${imageIndex}`,kind:'image_description',text,imageIndex,evidenceSource:'workflow_model'});
+    if(Number.isInteger(imageIndex)&&imageIndex>=0&&imageIndex<12&&clip(item?.visibleText,500))pieces.push({id:`image-ocr:${imageIndex}`,kind:'frame_ocr',text:clip(item.visibleText,500),imageIndex,evidenceSource:'ocr_model'});
   });
   if(Array.isArray(capture?.liveVideoEvidence))capture.liveVideoEvidence.slice(0,12).forEach(item=>{
     const imageIndex=Number(item?.imageIndex),text=clip(item?.text,1000);
@@ -161,6 +164,9 @@ export function validateKnowledgeImport(output,capture){
   });
   // 方案结构也必须引用原始证据；无依据的附加要点略去，不污染可保存的观点。
   const links=[],planPoints=[],warnings=[];
+  const author=validateAuthorStatements(card.authorStatements,pieces);warnings.push(...author.warnings);
+  let sourceBrief=null;
+  if(card.sourceBrief){const checked=validateSourceBrief({status:'ok',brief:card.sourceBrief},pieces);if(checked.ok&&checked.status==='ok')sourceBrief=checked.brief;else warnings.push('内容简介的来源已变化，请重新生成简介。');}
   const rawPlanPoints=Array.isArray(card.planPoints)?card.planPoints:[];
   if(rawPlanPoints.length>8)warnings.push(`方案要点最多 8 条，只保留前 8 条。`);
   rawPlanPoints.slice(0,8).forEach((point,n)=>{
@@ -186,13 +192,14 @@ export function validateKnowledgeImport(output,capture){
     else {seen.add(activity.id);links.push({activityId:activity.id,...(normalizeUse(link)||{}),evidenceQuote,evidenceId:piece.id,evidenceKind:piece.kind,evidenceSource:piece.evidenceSource||'user',...(piece.imageIndex!=null?{imageIndex:piece.imageIndex}:{}),...(piece.startMs!=null?{startMs:piece.startMs,endMs:piece.endMs}:{})});}
   });
   if(errors.length)return {ok:false,errors};
-  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),topics:normalizeTopics(card.topics),claims:drafts,activityLinks:links,contentType,planPoints},warnings};
+  return {ok:true,status:'ok',card:{title:clip(card.title,120),summary:clip(card.summary,700),topics:normalizeTopics(card.topics),claims:drafts,activityLinks:links,contentType,planPoints,...(card.authorStatements!=null?{authorStatements:author.statements}:{}),...(sourceBrief?{sourceBrief}:{})},warnings};
 }
 
 export function deleteKnowledge(state,knowledgeId){
   const knowledge=(state.knowledge||[]).find(k=>k.id===knowledgeId);
   if(!knowledge)throw new Error('找不到这条知识。');
   state.knowledge=state.knowledge.filter(k=>k.id!==knowledgeId);
+  if(state.sourceFeedback)state.sourceFeedback=state.sourceFeedback.filter(x=>x.knowledgeId!==knowledgeId);
   state.captures=(state.captures||[]).filter(c=>c.knowledgeId!==knowledgeId&&c.id!==knowledge.captureId);
   dropKnowledgeUses(state,knowledgeId);
   return true;
@@ -205,6 +212,8 @@ export function applyKnowledgeCard(state,captureId,card,now=new Date()){
   if(!knowledge)throw new Error('找不到对应的知识卡，请刷新后重试。');
   Object.assign(knowledge,{status:'saved',title:clip(card.title,120),text:clip(card.summary,700)||card.claims.map(c=>c.text).join('；'),url:capture.rawUrl,sourceTitle:clip(capture.sourceTitle,180)||capturePlatforms[capture.platform],activityIds:card.activityLinks.map(x=>x.activityId),claims:card.claims,activityLinks:card.activityLinks,contentType:CONTENT_TYPES[card.contentType]?card.contentType:null,planPoints:Array.isArray(card.planPoints)?card.planPoints.slice(0,8):[],topics:normalizeTopics(card.topics),sourceKind:entryKind({},capture),updatedAt:date(now)});
   Object.assign(capture,{status:'card_created',cardDraft:null,updatedAt:date(now)});
+  if(card.sourceBrief)knowledge.sourceBrief=structuredClone(card.sourceBrief);
+  if(card.authorStatements)knowledge.authorStatements=structuredClone(card.authorStatements);
   replaceKnowledgeUses(state,knowledge,now);
   return knowledge;
 }
