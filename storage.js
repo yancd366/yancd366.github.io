@@ -1,4 +1,4 @@
-import { initialState } from './domain.js';
+import { initialState,safeURL } from './domain.js';
 import { publicActivities,goals,equipmentLabels } from './catalog.js';
 import { validateSets } from './training.js';
 import { normalizeAssessment } from './abilities.js';
@@ -10,6 +10,7 @@ import {validateSourceExtrasShape} from './source-brief.js';
 import {plannerOrder} from './planner-layout.js';
 import {regionExtras} from './activity-regions.js';
 import {validateSourceExtractions} from './source-extractions.js';
+import {validateScenesStore,reconcileSceneDays} from './movement-scenes.js';
 const publicIds=publicActivities.map(a=>a.id);
 const id=x=>typeof x==='string'&&/^[-_a-zA-Z0-9:.]{1,150}$/.test(x);
 const array=(x,name)=>{if(!Array.isArray(x)||x.length>10000)throw new Error(`${name} 格式无效`);return x;};
@@ -17,8 +18,11 @@ export function normalizeStore(data){
   if(!data||data.schemaVersion!==1||typeof data.profile!=='object')throw new Error('备份版本或档案格式无效。');
   const base=initialState(),s=structuredClone(data);
   if(s.dailyPractice!=null)validateDaily(s.dailyPractice);
+  validateScenesStore(s);
   if(s.settings?.plannerSectionOrder!=null)s.settings.plannerSectionOrder=plannerOrder(s.settings.plannerSectionOrder);
   for(const p of s.personalActivities||[]){if(p.extraRegions!=null&&!Array.isArray(p.extraRegions)||p.customRegions!=null&&!Array.isArray(p.customRegions))throw Error('个人动作补充部位格式无效。');if((p.extraRegions||[]).some(x=>typeof x!=='string')||(p.customRegions||[]).some(x=>typeof x!=='string'))throw Error('部位标签必须是文字。');const x=regionExtras(p);Object.assign(p,x);if(x.customRegions.length&&p.planningUse==='allowed')throw Error('带自定义部位的动作暂不支持自动安排。');}
+  for(const p of s.personalActivities||[]){const w=p.source?.webSearch;if(w!=null&&(!safeURL(w.url)||typeof w.title!=='string'||typeof w.userText!=='string'||w.userText.length>4000||!['source_quote','my_description'].includes(w.mode)||w.verified!==false))throw Error('网页动作来源格式无效。');}
+  for(const k of s.knowledge||[]){const w=k.webActionSource;if(w!=null&&(!safeURL(w.url)||typeof w.title!=='string'||typeof w.userText!=='string'||w.userText.length>4000||!['source_quote','my_description'].includes(w.mode)||w.verified!==false))throw Error('网页动作来源知识格式无效。');}
   if(s.sourceFeedback!=null){array(s.sourceFeedback,'实践反馈');const seen=new Set();for(const x of s.sourceFeedback){validateFeedback(x);if(seen.has(x.id)||!s.knowledge?.some(k=>k.id===x.knowledgeId))throw new Error('实践反馈重复或原收藏不存在。');seen.add(x.id);}}
   for(const item of [...(s.knowledge||[]),...(s.captures||[])]){validateSourceExtrasShape(item);if(item.cardDraft)validateSourceExtrasShape(item.cardDraft);}
   // 备份里的个人动作 ID 也算已知动作（训练记录、心得、收藏可能引用它们）。
@@ -95,12 +99,12 @@ export function rawBackupText(raw){const data=JSON.parse(raw);if(!data||typeof d
 export function parseBackup(text){if(text.length>5_000_000)throw new Error('备份过大，请使用 5 MB 以内的 JSON 文件。');const s=normalizeStore(JSON.parse(text));s.settings={...s.settings,aiConsent:null,aiDirect:null,ingest:null};s.captures=s.captures.map(c=>c.ingestStatus==='queued'?{...c,ingestStatus:'failed',ingestJobId:null,ingestError:'后台任务不会随备份迁移；可在这台设备重新尝试。'}:c);return s;}
 export function mergeBackup(current,incoming,restoreProfile=false){
   const next=structuredClone(current);let added=0;
-  for(const key of ['sessions','notes','knowledge','captures','creatorProfiles','savedPlans','activityUses','topicCards','personalActivities','activityMedia','observations','assessments','abilityEvidence','sourceFeedback','activityExtractions']){
+  for(const key of ['sessions','notes','knowledge','captures','creatorProfiles','savedPlans','activityUses','topicCards','personalActivities','activityMedia','observations','assessments','abilityEvidence','sourceFeedback','activityExtractions','movementScenes','sceneDays']){
     next[key] ||= [];const ids=new Set(next[key].map(x=>x.id));
-    for(const x of incoming[key]||[])if(!ids.has(x.id)){next[key].push(structuredClone(x));ids.add(x.id);added++;}
+    for(const x of incoming[key]||[])if(!ids.has(x.id)&&!(key==='sceneDays'&&next.sceneDays.some(d=>d.sceneId===x.sceneId&&d.date===x.date))){next[key].push(structuredClone(x));ids.add(x.id);added++;}
   }
   if(restoreProfile){next.profile=structuredClone(incoming.profile);if(incoming.settings?.plannerSectionOrder)next.settings.plannerSectionOrder=plannerOrder(incoming.settings.plannerSectionOrder);if(incoming.dailyPractice)next.dailyPractice={...structuredClone(incoming.dailyPractice),routineAck:false};}
   // Do not restore running workouts or permissions from an imported file.
   next.sessions.sort((a,b)=>new Date(a.endedAt)-new Date(b.endedAt));
-  return {state:normalizeStore(next),added};
+  reconcileSceneDays(next);return {state:normalizeStore(next),added};
 }

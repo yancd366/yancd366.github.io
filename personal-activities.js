@@ -70,6 +70,7 @@ export function createPersonalActivity(state, input, { source = null, parentActi
   const p = { id: `my-${uid()}`, status: 'confirmed', planningUse: PLANNING_USES[planningUse] ? planningUse : 'manual_only', ...draft,
     parentActivityId, source: source ? { knowledgeId: source.knowledgeId || null, quote: clip(source.quote, 300), lowTrust: Boolean(source.lowTrust), thumbnailId: clip(source.thumbnailId, 180)||null, userCorrection: clip(source.userCorrection,300)||null, suggestedActivityId: clip(source.suggestedActivityId,100)||null, sourceUrl: clip(source.sourceUrl, 1000)||null, kind:source.kind==='image_post'?'image_post':'video_frame', startMs:source.startMs!=null&&Number.isFinite(Number(source.startMs))?Number(source.startMs):null, endMs:source.endMs!=null&&Number.isFinite(Number(source.endMs))?Number(source.endMs):null } : null,
     personalNote: clip(personalNote, 1000), createdAt: date(now), updatedAt: date(now), archivedAt: null };
+  if(source?.webSearch&&p.source){const w=source.webSearch;p.source.webSearch={url:clip(w.url,1000),title:clip(w.title,120),site:clip(w.site,80),question:clip(w.question,300),userText:clip(w.userText,4000),mode:w.mode==='my_description'?'my_description':'source_quote',verified:false};delete p.source.kind;}
   state.personalActivities ||= []; state.personalActivities.push(p);
   return p;
 }
@@ -91,7 +92,9 @@ export function activityReferences(state, id) {
     + (state.knowledge || []).filter(k => (k.activityIds || []).includes(id)).length + (state.activityUses || []).filter(u => u.activityId === id).length
     + (state.creatorProfiles || []).filter(p => (p.activityIds || []).includes(id)).length
     + (state.activityMedia || []).filter(m=>m.activityId===id).length
-    + (state.activityExtractions || []).filter(m=>m.activityIds.includes(id)).length;
+    + (state.activityExtractions || []).filter(m=>m.activityIds.includes(id)).length
+    + (state.movementScenes || []).filter(s=>s.activityIds.includes(id)).length
+    + (state.sceneDays || []).filter(d=>d.items.some(i=>i.activityId===id)).length;
 }
 export function deletePersonalActivity(state, id) {
   findP(state, id);
@@ -106,6 +109,7 @@ export { manualEligible };
 export function addToDraft(plan, activityId, profile) {
   const a = activityById(activityId);
   if (!plan || plan.startedAt) throw new Error('只能加到还没开始的安排里。');
+  if(plan.sceneId)throw Error('这是已确认的场景清单；请在场景动作池增减，不能直接混入本次清单。');
   if (!a) throw new Error('找不到这个动作。');
   if (plan.items.some(i => i.activityId === a.id)) throw new Error('这个动作已经在安排里了。');
   if (!manualEligible(a, plan.request, profile)) throw new Error('今天的场地、器械、状态或训练经历不适合这个动作。');

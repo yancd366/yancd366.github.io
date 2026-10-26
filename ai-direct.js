@@ -13,18 +13,33 @@ export const organizeModelAllowed = (skill, model) => ORGANIZE_SKILLS.includes(s
 // 兼容模式接口不返回搜索来源，模型会自己编链接；所以搜索走百炼原生接口，由程序取回真实的搜索结果
 // （标题、链接、网站名）附在回复的 searchResults 上——模型写的同名字段一律被覆盖。
 export const SEARCH_SKILLS = ['knowledge-search'];
+// Native multimodal search is SSE-only for current Qwen models. Results may arrive before text.
+export async function readSearchReply(res){
+  let text='',usage=null,bytes=0;const results=new Map();
+  const absorb=data=>{
+    if(data.code&&data.code!=='200')throw Error(`AI 搜索失败（${String(data.code).replace(/[^\w.-]/g,'').slice(0,80)}），请检查服务配置。`);
+    const content=data.output?.choices?.[0]?.message?.content;
+    text+=Array.isArray(content)?content.map(x=>x?.text||'').join(''):typeof content==='string'?content:'';
+    for(const r of data.output?.search_info?.search_results||[]){const index=Number(r.index);if(Number.isInteger(index)&&typeof r.url==='string')results.set(index,{index,title:String(r.title||'').trim().slice(0,300),url:r.url,site:String(r.site_name||'').slice(0,80)});}
+    if(data.usage)usage=data.usage;
+  };
+  if(/text\/event-stream/i.test(res.headers.get('content-type')||'')){
+    const reader=res.body?.getReader();if(!reader)throw Error('搜索流不可读取。');const decoder=new TextDecoder();let buffer='';
+    const event=block=>{const payload=block.split(/\r?\n/).filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(payload&&payload.trim()!=='[DONE]')absorb(JSON.parse(payload));};
+    try{for(;;){const {value,done}=await reader.read();if(value){bytes+=value.byteLength;if(bytes>2_000_000)throw Error('搜索返回过大，请缩小问题范围。');buffer+=decoder.decode(value,{stream:true});}if(done){buffer+=decoder.decode();if(buffer.trim())event(buffer);break;}let boundary;while((boundary=/\r?\n\r?\n/.exec(buffer))){event(buffer.slice(0,boundary.index));buffer=buffer.slice(boundary.index+boundary[0].length);}}}
+    catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
+  }else{const raw=await res.text();if(raw.length>2_000_000)throw Error('搜索返回过大，请缩小问题范围。');absorb(JSON.parse(raw));}
+  return {reply:{...parseReply(text),searchResults:[...results.values()]},usage};
+}
 export async function callSearch({ base, key, model }, messages, temperature, { fetchImpl = fetch, timeoutMs = 180000 } = {}) {
   const origin = new URL(base).origin;
-  const body = { model, input: { messages }, parameters: { result_format: 'message', temperature, enable_thinking: false, enable_search: true,
+  const body = { model, input: { messages:messages.map(m=>({...m,content:typeof m.content==='string'?[{text:m.content}]:m.content})) }, parameters: { result_format: 'message', temperature, enable_thinking: false, enable_search: true,incremental_output:true,
     search_options: { forced_search: true, enable_source: true }, response_format: { type: 'json_object' } } };
   let res;
   try { res = await fetchImpl(`${origin}/api/v1/services/aigc/multimodal-generation/generation`, { method: 'POST', signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }, body: JSON.stringify(body) }); } catch { throw new AINetworkError(); }
+    headers: { 'Content-Type': 'application/json',Accept:'text/event-stream','X-DashScope-SSE':'enable', Authorization: `Bearer ${key}` }, body: JSON.stringify(body) }); } catch { throw new AINetworkError(); }
   if (!res.ok) throw new Error(`AI 搜索服务返回 ${res.status}：${(await res.text()).slice(0, 200)}`);
-  const data = await res.json(), content = data.output?.choices?.[0]?.message?.content;
-  const text = Array.isArray(content) ? content.map(x => x?.text || '').join('') : content;
-  const searchResults = (data.output?.search_info?.search_results || []).map(r => ({ index: r.index, title: String(r.title || '').trim(), url: r.url, site: r.site_name || '' }));
-  return { reply: { ...parseReply(text), searchResults }, usage: data.usage || null };
+  return readSearchReply(res);
 }
 // 本次调用要换用的模型；null 表示用默认模型。
 export const organizeModel = (state, skill) => { const m = state?.settings?.aiOrganizeModel; return organizeModelAllowed(skill, m) ? m : null; };

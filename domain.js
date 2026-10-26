@@ -161,6 +161,7 @@ export function checkPlanStart(plan, profile) {
   return null;
 }
 export function applyReplacement(plan,itemId,activity){
+  if(plan.sceneId)throw Error('场景清单已确认，不能在训练预览中替换来源项目。');
   const i=plan.items.find(x=>x.id===itemId);if(!i||i.status!=='pending')throw new Error('只能替换尚未开始的动作。');
   const diff=i.plannedMinutes-activity.minutes;
   Object.assign(i,{activityId:activity.id,activitySnapshot:structuredClone(activity),plannedMinutes:activity.minutes,prescription:null,reason:'已更换动作，请重新选择适合的阻力；原动作的负荷不沿用。',actualSetDetails:null,actualSets:null,actualReps:null,actualLoadKg:null,feedback:''});
