@@ -1,6 +1,6 @@
 import { redFlagCheck } from './abilities.js';
 
-const REGION_NAMES={chest:'胸部',back:'背部',shoulders:'肩部',arms:'上臂',core:'腰腹',hips_legs:'臀腿 / 膝',forearms_wrists:'前臂 / 手腕',calves_ankles:'小腿 / 足踝',neck:'颈部'};
+const REGION_NAMES={chest:'胸部',back:'背部',shoulders:'肩部',arms:'上臂',core:'腰腹',hips_legs:'臀腿 / 膝',forearms_wrists:'前臂 / 手腕',calves_ankles:'小腿 / 足踝',neck:'颈部',eyes:'眼部',face:'五官与面部'};
 const PATTERNS={
   chest:/胸部|胸口|胸肌|胸/,back:/上背|背部|背阔|菱形肌|斜方肌|肩胛|背/,shoulders:/肩|三角肌/,arms:/上臂|肱二|肱三|肱肌|手臂|胳膊|肘/,
   core:/腰|腹|下背|躯干|核心|竖脊/,hips_legs:/臀|髋|膝|大腿|股四|腘绳|股二|内收|腿/,
@@ -8,8 +8,9 @@ const PATTERNS={
 };
 const goalWords=/想.{0,12}(?:练|锻炼|训练)|希望.{0,12}(?:练|锻炼|训练)|强化|加强|增强|提升.{0,6}(?:力量|能力)|训练|锻炼|练(?:胸|背|肩|腿|手臂|前臂|小臂|足弓|核心|腹)/;
 const clauses=text=>String(text||'').split(/[，,。；;！？!?\n]|但是|不过|但/).map(x=>x.trim()).filter(Boolean);
-export function regionsInText(text){
-  return Object.entries(PATTERNS).filter(([region,pattern])=>pattern.test(region==='hips_legs'?String(text).replace(/小腿/g,''):text)).map(([region])=>region);
+export function regionsInText(text,{includeSensory=false}={}){
+  const patterns=includeSensory?{...PATTERNS,eyes:/眼|视觉/,face:/脸|面部|五官|唇|鼻|耳部|下颌/}:PATTERNS;
+  return Object.entries(patterns).filter(([region,pattern])=>pattern.test(region==='hips_legs'?String(text).replace(/小腿/g,''):text)).map(([region])=>region);
 }
 // 只按用户明说的部位与疼痛词分类，不从目标、照片或诊断名称推断疼痛。
 export function movementIntent(text){
@@ -19,10 +20,10 @@ export function movementIntent(text){
     for(const match of clause.matchAll(/疼痛|疼|痛/g)){
       const before=clause.slice(0,match.index),after=clause.slice(match.index+match[0].length);
       const namedNegation=/(?:没有|并无|无|没)(?:左|右|两|双)?(?:胸口|胸部|胸|膝盖|膝|肩膀|肩部|肩|手腕|前臂|小臂|脚踝|足弓|足底|脚|颈部|脖子|腰部|腰|背部|背|腹部|小腿|大腿|肘|手臂)(?:的)?$/;
-      if(namedNegation.test(before)||/(?:没有|并无|无|不|没|未)(?:任何|什么|明显|感到|觉得|出现|有)?$/.test(before)||/^(?:已经|已|现在)?(?:消失|没有了|没了|好了)/.test(after))continue;
+      if(namedNegation.test(before)||/(?:没有|并无|无|没)(?:左|右|两|双)?(?:眼睛|眼部|眼|脸部|面部|脸|嘴唇|鼻子|耳部)(?:的)?$/.test(before)||/(?:没有|并无|无|不|没|未)(?:任何|什么|明显|感到|觉得|出现|有)?$/.test(before)||/^(?:已经|已|现在)?(?:消失|没有了|没了|好了)/.test(after))continue;
       hasPain=true;
       const prefix=before.split(/不疼|没疼|不痛|没有疼痛|无痛/).at(-1).slice(-16);
-      const regions=regionsInText(prefix).length?regionsInText(prefix):regionsInText(after.slice(0,14));
+      const regions=regionsInText(prefix,{includeSensory:true}).length?regionsInText(prefix,{includeSensory:true}):regionsInText(after.slice(0,14),{includeSensory:true});
       if(!regions.length)unknownPain=true;
       regions.forEach(x=>painRegions.add(x));
     }
@@ -55,7 +56,7 @@ export function safetyBlock(profile={},request={}) {
 }
 // 自动排除也检查握持、支撑和站立时使用的部位。
 export function activityLoadRegions(activity){
-  const regions=new Set([...(activity.primaryRegions||[]),...(activity.secondaryRegions||[]),...(activity.loadedRegions||[]),...regionsInText((activity.body||[]).join(' '))]);
+  const regions=new Set([...(activity.primaryRegions||[]),...(activity.secondaryRegions||[]),...(activity.loadedRegions||[]),...(activity.extraRegions||[]),...regionsInText((activity.body||[]).join(' '),{includeSensory:true})]);
   const posture=(activity.setup||[]).join(' '),movement=[activity.name,activity.familyId,...(activity.steps||[])].join(' ');
   if(activity.category!=='recovery'){
     if(activity.category==='strength'&&regions.has('hips_legs'))regions.add('calves_ankles');
@@ -74,6 +75,7 @@ export function activityLoadRegions(activity){
 export function activityAllowedByPain(activity,profile,request){
   if(!activity)return false;
   const pain=excludedPainRegions(profile,request);if(!pain.length)return true;
+  if(activity.customRegions?.length)return false;
   if(activity.personal&&!(activity.primaryRegions?.length||activity.secondaryRegions?.length||activity.loadedRegions?.length))return false;
   return !activityLoadRegions(activity).some(region=>pain.includes(region));
 }

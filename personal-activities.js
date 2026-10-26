@@ -7,6 +7,7 @@ import { entry } from './library/entry.js';
 import { manualEligible, uid } from './domain.js';
 import { captureEvidence } from './knowledge.js';
 import { normalizeUse } from './activity-uses.js';
+import {regionExtras,EXTRA_REGIONS} from './activity-regions.js';
 
 const clip = (value, max) => String(value || '').trim().slice(0, max);
 const squash = s => String(s || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
@@ -33,6 +34,7 @@ export function normalizeActivityDraft(x = {}) {
     system: Object.hasOwn(systems, x.system) ? x.system : 'general',
     setup: lines(x.setup, 4, 80), steps: lines(x.steps, 8, 100), cues: lines(x.cues, 6, 80), mistakes: lines(x.mistakes, 5, 80), dose: clip(x.dose, 100)
   };
+  try{Object.assign(draft,regionExtras(x));}catch(e){errors.push(e.message);}
   if (!draft.places.length) draft.places = ['home', 'gym'];
   if (!draft.name) errors.push('需要动作名称');
   if (!draft.description && !draft.steps.length) errors.push('需要写一句「怎么做」或动作步骤');
@@ -45,14 +47,14 @@ export function normalizeActivityDraft(x = {}) {
 // 个人动作 → 与公共动作相同的单元。
 export function toUnit(p) {
   const parent = p.parentActivityId ? activityById(p.parentActivityId) : null;
-  const body = p.primaryRegions?.length ? p.primaryRegions.map(r => bodyRegions[r].label) : [CATEGORIES[p.category] || '全身'];
+  const body = [...(p.primaryRegions||[]).map(r=>bodyRegions[r]?.label).filter(Boolean),...(p.extraRegions||[]).map(r=>EXTRA_REGIONS[r]).filter(Boolean),...(p.customRegions||[])];if(!body.length)body.push(CATEGORIES[p.category]||'全身');
   return { ...entry(p.id, p.name, p.category, body, p.minutes, {
     phase: p.phase, primaryRegions: p.primaryRegions, secondaryRegions: p.secondaryRegions, places: p.places, equipment: p.equipment,
     difficulty: `${tiers[p.tier]} · 我的动作`, tier: p.tier, impact: p.impact, system: p.system, aliases: p.aliases, description: p.description,
     setup: p.setup, steps: p.steps, ...(p.cues?.length ? { cues: p.cues } : {}), mistakes: p.mistakes, dose: p.dose,
     sourceId: 'personal', editorialStatus: 'personal' }),
     familyId: parent?.familyId || p.id, canonicalId: p.id, personal: true, archived: p.status === 'archived', source: p.source || null, personalNote: p.personalNote || '', planningUse: p.planningUse, parentActivityId: p.parentActivityId || null,
-    selectable: p.status === 'confirmed' && p.planningUse === 'allowed', requiresGuidance: false, standardsVerified: false };
+    extraRegions:p.extraRegions||[],customRegions:p.customRegions||[],selectable: p.status === 'confirmed' && p.planningUse === 'allowed' && !p.customRegions?.length, requiresGuidance: false, standardsVerified: false };
 }
 // 读取 / 保存数据后调用：把个人动作同步进实时注册表（归档的仍可查找，只是不再可选）。
 export function syncPersonalActivities(state) { setPersonalActivities((state.personalActivities || []).map(toUnit)); }
@@ -61,6 +63,7 @@ export const isPersonal = a => a?.personal === true;
 export function createPersonalActivity(state, input, { source = null, parentActivityId = null, planningUse = 'manual_only', personalNote = '' } = {}, now = new Date()) {
   const { ok, draft, errors } = normalizeActivityDraft(input);
   if (!ok) throw new Error(errors[0]);
+  if(draft.customRegions.length&&planningUse==='allowed')throw Error('自定义部位尚无自动安全规则，请取消允许自动安排，先保存为仅手动使用。');
   const clash = activities.find(a => [a.name, ...a.aliases].some(n => squash(n) === squash(draft.name)));
   if (clash) throw new Error(`动作库里已经有「${clash.name}」，可以直接给它记用途或心得，不必重复新建。`);
   if (parentActivityId && !activityById(parentActivityId)) throw new Error('找不到母动作。');
@@ -76,10 +79,10 @@ export function updatePersonalActivity(state, id, input, now = new Date()) {
   if (!ok) throw new Error(errors[0]);
   const clash = activities.find(a => a.id !== id && [a.name, ...a.aliases].some(n => squash(n) === squash(draft.name)));
   if (clash) throw new Error(`动作库里已经有「${clash.name}」。`);
-  Object.assign(p, draft, { updatedAt: date(now) });
+  Object.assign(p, draft, { ...(draft.customRegions.length?{planningUse:'manual_only'}:{}),updatedAt: date(now) });
   return p;
 }
-export function setActivityPlanning(state, id, use, now = new Date()) { const p = findP(state, id); if (!PLANNING_USES[use]) throw new Error('用途无效。'); p.planningUse = use; p.updatedAt = date(now); return p; }
+export function setActivityPlanning(state, id, use, now = new Date()) { const p = findP(state, id); if (!PLANNING_USES[use]) throw new Error('用途无效。');if(use==='allowed'&&p.customRegions?.length)throw Error('自定义部位暂仅手动使用，请先核对标准部位。');p.planningUse = use; p.updatedAt = date(now); return p; }
 export function archivePersonalActivity(state, id, archived = true, now = new Date()) { const p = findP(state, id); p.status = archived ? 'archived' : 'confirmed'; p.archivedAt = archived ? date(now) : null; p.updatedAt = date(now); return p; }
 // 被训练记录、心得、收藏、用途备注或当前安排引用的个人动作只能归档，不能删除（否则备份会失效）。
 export function activityReferences(state, id) {
@@ -87,7 +90,8 @@ export function activityReferences(state, id) {
   return items.filter(i => i.activityId === id).length + (state.notes || []).filter(n => n.activityId === id).length
     + (state.knowledge || []).filter(k => (k.activityIds || []).includes(id)).length + (state.activityUses || []).filter(u => u.activityId === id).length
     + (state.creatorProfiles || []).filter(p => (p.activityIds || []).includes(id)).length
-    + (state.activityMedia || []).filter(m=>m.activityId===id).length;
+    + (state.activityMedia || []).filter(m=>m.activityId===id).length
+    + (state.activityExtractions || []).filter(m=>m.activityIds.includes(id)).length;
 }
 export function deletePersonalActivity(state, id) {
   findP(state, id);

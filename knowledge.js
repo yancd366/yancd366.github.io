@@ -200,6 +200,7 @@ export function deleteKnowledge(state,knowledgeId){
   if(!knowledge)throw new Error('找不到这条知识。');
   state.knowledge=state.knowledge.filter(k=>k.id!==knowledgeId);
   if(state.sourceFeedback)state.sourceFeedback=state.sourceFeedback.filter(x=>x.knowledgeId!==knowledgeId);
+  if(state.activityExtractions)state.activityExtractions=state.activityExtractions.filter(x=>x.knowledgeId!==knowledgeId);
   state.captures=(state.captures||[]).filter(c=>c.knowledgeId!==knowledgeId&&c.id!==knowledge.captureId);
   dropKnowledgeUses(state,knowledgeId);
   return true;

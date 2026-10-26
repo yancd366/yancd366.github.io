@@ -12,6 +12,6 @@ export function inLibraryGroup(a,group,state={}){
   if(group==='traditional')return /八段锦|五禽戏|太极|易筋经/.test([a.name,...a.aliases].join(' '));
   if(group==='office')return a.places.includes('office');
   if(group==='eyes')return a.body.some(x=>/眼部|视觉/.test(x));
-  if(group==='face')return a.body.some(x=>/面部|面肌|脸部|唇部|下颌/.test(x));
+  if(group==='face')return a.body.some(x=>/五官|面部|面肌|脸部|唇部|下颌/.test(x));
   return false;
 }

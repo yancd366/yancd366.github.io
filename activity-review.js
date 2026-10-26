@@ -7,7 +7,7 @@ export function reviewDraft(candidate){
   return candidate.draft?structuredClone(candidate.draft):{name:'',description:'',category:'mobility',phase:'warmup',primaryRegions:[],places:['home','gym'],equipment:[],tier:1,impact:'low',minutes:3,system:'general',setup:[],steps:[],cues:[],mistakes:[],dose:''};
 }
 export function readReviewFields(form,prefix){
-  return Object.fromEntries(['name','aliases','description','category','phase','tier','impact','minutes','system','setup','steps','cues','mistakes','dose'].map(key=>[key,form.get(prefix+key)]).concat(['primaryRegions','places','equipment'].map(key=>[key,form.getAll(prefix+key)])));
+  return Object.fromEntries(['name','aliases','description','category','phase','tier','impact','minutes','system','setup','steps','cues','mistakes','dose','customRegions'].map(key=>[key,form.get(prefix+key)]).concat(['primaryRegions','extraRegions','places','equipment'].map(key=>[key,form.getAll(prefix+key)])));
 }
 export function validateActivityReview(candidates,form,state){
   const known=[...activities,...(state.personalActivities||[]).filter(p=>!activities.some(a=>a.id===p.id))],items=[],errors=[],newNames=new Set();
