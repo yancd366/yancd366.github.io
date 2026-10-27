@@ -6,6 +6,7 @@ import {isTimed} from './training.js';
 import {buildActivityHistory,FREE_SORTS} from './activity-history.js';
 import {setsText,LOAD_BASES} from './training.js';
 import {dateText} from './ui.js';
+import {studioWorkoutHTML} from './training-studio-view.js';
 export function activityHistoryHTML(state,id){
   const h=buildActivityHistory(state).get(id);if(!h)return '<p class="small muted">还没有这个动作的已保存训练记录。</p>';
   const setText=sets=>sets.map(x=>`${setsText([x])}${x.loadKg!=null?`（${LOAD_BASES[x.loadBasis]||'口径未注明'}）`:''}${x.phase==='warmup'?' · 热身组':x.phase==='main'?' · 正式组':x.phase==='cooldown'?' · 放松组':''}`).join('、');
@@ -15,6 +16,7 @@ export function freeStartForm(request){
   return `<p>自己选动作、边练边记。不需要预先承诺训练多久，也不调用 AI。</p><form id="free-start-form"><div class="field-row"><label>今天想练<select name="region">${Object.entries(freeRegionLabels).map(([v,l])=>`<option value="${v}" ${v===(request.targetRegions?.[0]||'hips_legs')?'selected':''}>${esc(l)}</option>`).join('')}</select></label><label>场地<select name="place">${Object.entries(places).map(([v,l])=>`<option value="${v}" ${v===request.place?'selected':''}>${l}</option>`).join('')}</select></label></div><label>今天状态<select name="readiness"><option value="normal">正常</option><option value="tired">偏累</option><option value="discomfort">有不舒服，需要先说明</option></select></label><label>疼痛限制或训练目标（可选）<textarea name="userText" maxlength="1000" placeholder="例如：手腕疼，今天想练腿。不会按疼痛推荐恢复动作。"></textarea></label><button class="primary full" type="submit">进入自由训练</button></form>`;
 }
 export function freeWorkoutHTML(state,links){
+  if(state.draft?.studioVersion===1)return studioWorkoutHTML(state,links,activityHistoryHTML);
   const p=state.draft,c=p.freeConfig,rows=freeCandidates(state),active=p.items[p.cursor||0],block=freeRecordingBlock(p,state.profile,state.assessments);
   const activeTimed=active&&(isTimed(active,active.activitySnapshot)||['mobility','recovery','cardio'].includes(active.activitySnapshot.category));
   const row=({activity:a,phase,allowed,reason,history,sortReason})=>{const item=p.items.find(i=>i.activityId===a.id);return `<article class="free-candidate"><div><button class="text-button" data-detail="${esc(a.id)}"><strong>${esc(a.name)}</strong></button><p class="small muted">${esc(a.body.join('、'))} · ${phases[phase]} · ${a.equipment.map(e=>equipmentLabels[e]).join('、')||'无需器械'}</p><p class="small free-frequency">近 28 天 ${history?.sessions28||0} 次${history?.lastAt?` · 上次 ${dateText(history.lastAt)}`:' · 尚无已保存记录'}</p><p class="small muted">${esc(allowed?sortReason:reason)}</p></div><button class="${item?.status==='completed'?'secondary':'primary'}" data-free-select="${esc(a.id)}" ${allowed?'':'disabled'}>${item?.status==='completed'?`已记 ${item.actualSetDetails?.length||0} 组 · 继续`:item?'继续记录':'练这个'}</button></article>`;};

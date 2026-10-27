@@ -13,6 +13,7 @@ export function validateSets(sets) {
     if (x.loadBasis!=null && !Object.hasOwn(LOAD_BASES,x.loadBasis)) throw new Error('请注明重量口径。');
     if (x.feeling!=null && x.feeling!=='' && !Object.hasOwn(FEELINGS,x.feeling)) throw new Error('感受选项无效。');
     if (x.phase!=null && !['warmup','main','cooldown'].includes(x.phase)) throw new Error('组次用途无效。');
+    if(x.studioGroupId!=null&&(typeof x.studioGroupId!=='string'||!/^[-_a-zA-Z0-9:.]{1,150}$/.test(x.studioGroupId)||!Number.isInteger(x.studioRound)||x.studioRound<1||x.studioRound>30)||x.studioRound!=null&&x.studioGroupId==null)throw Error('组合轮次格式无效。');
   }
   return sets;
 }

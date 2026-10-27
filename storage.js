@@ -11,14 +11,18 @@ import {plannerOrder} from './planner-layout.js';
 import {regionExtras} from './activity-regions.js';
 import {validateSourceExtractions} from './source-extractions.js';
 import {validateScenesStore,reconcileSceneDays} from './movement-scenes.js';
+import {validateStudioShape,studioDataForStorage} from './training-studio.js';
 const publicIds=publicActivities.map(a=>a.id);
 const id=x=>typeof x==='string'&&/^[-_a-zA-Z0-9:.]{1,150}$/.test(x);
 const array=(x,name)=>{if(!Array.isArray(x)||x.length>10000)throw new Error(`${name} 格式无效`);return x;};
 export function normalizeStore(data){
   if(!data||data.schemaVersion!==1||typeof data.profile!=='object')throw new Error('备份版本或档案格式无效。');
   const base=initialState(),s=structuredClone(data);
+  if(s.studioDraft!=null){validateStudioShape(s.studioDraft);if(!s.draft)s.draft=s.studioDraft;else s.parkedStudioDraft=s.studioDraft;delete s.studioDraft;}
+  validateStudioShape(s.parkedStudioDraft);
   if(s.dailyPractice!=null)validateDaily(s.dailyPractice);
   validateScenesStore(s);
+  validateStudioShape(s.draft);for(const session of s.sessions||[])validateStudioShape(session.planSnapshot);
   if(s.settings?.plannerSectionOrder!=null)s.settings.plannerSectionOrder=plannerOrder(s.settings.plannerSectionOrder);
   for(const p of s.personalActivities||[]){if(p.extraRegions!=null&&!Array.isArray(p.extraRegions)||p.customRegions!=null&&!Array.isArray(p.customRegions))throw Error('个人动作补充部位格式无效。');if((p.extraRegions||[]).some(x=>typeof x!=='string')||(p.customRegions||[]).some(x=>typeof x!=='string'))throw Error('部位标签必须是文字。');const x=regionExtras(p);Object.assign(p,x);if(x.customRegions.length&&p.planningUse==='allowed')throw Error('带自定义部位的动作暂不支持自动安排。');}
   for(const p of s.personalActivities||[]){const w=p.source?.webSearch;if(w!=null&&(!safeURL(w.url)||typeof w.title!=='string'||typeof w.userText!=='string'||w.userText.length>4000||!['source_quote','my_description'].includes(w.mode)||w.verified!==false))throw Error('网页动作来源格式无效。');}
@@ -27,6 +31,7 @@ export function normalizeStore(data){
   for(const item of [...(s.knowledge||[]),...(s.captures||[])]){validateSourceExtrasShape(item);if(item.cardDraft)validateSourceExtrasShape(item.cardDraft);}
   // 备份里的个人动作 ID 也算已知动作（训练记录、心得、收藏可能引用它们）。
   const known=new Set([...publicIds,...(Array.isArray(s.personalActivities)?s.personalActivities.map(p=>p?.id).filter(Boolean):[])]);
+  for(const p of [s.draft,s.parkedStudioDraft])if(p?.studioVersion===1)for(const i of p.items)if(i.activityId&&!known.has(i.activityId)){i.studioFormerActivityId=i.activityId;i.activityId=null;i.customName=i.activitySnapshot?.name||i.customName||'旧动作（未关联）';}
   validateSourceExtractions(s,known);
   for(const k of ['sessions','notes','knowledge','observations'])array(s[k],k);
   if(s.captures!=null)array(s.captures,'captures');
@@ -93,7 +98,7 @@ export function normalizeStore(data){
   return {...base,...s,profile:{...base.profile,...s.profile},captures:s.captures||[],creatorProfiles:s.creatorProfiles||[],savedPlans:s.savedPlans||[],activityUses:s.activityUses||[],topicCards:s.topicCards||[],personalActivities:s.personalActivities||[],digestedAt:s.digestedAt||null,assessments:(s.assessments||[]).map(normalizeAssessment),abilityEvidence:s.abilityEvidence||[],settings:{...base.settings,...s.settings,planningReferences}};
 }
 // Never let an API key or AI authorisation ride into the app on export or import.
-export const sanitizeForExport=state=>({...state,settings:{...state.settings,aiConsent:null,aiDirect:null,ingest:null},captures:(state.captures||[]).map(c=>c.ingestStatus==='queued'?{...c,ingestStatus:'failed',ingestJobId:null,ingestError:'后台任务不会随备份迁移；可在这台设备重新尝试。'}:c)});
+export const sanitizeForExport=state=>({...studioDataForStorage(state),settings:{...state.settings,aiConsent:null,aiDirect:null,ingest:null},captures:(state.captures||[]).map(c=>c.ingestStatus==='queued'?{...c,ingestStatus:'failed',ingestJobId:null,ingestError:'后台任务不会随备份迁移；可在这台设备重新尝试。'}:c)});
 // 本地数据读不进来时的救援导出：同样脱敏；连 JSON 都解析不了就抛错，不输出可能带 key 的原文。
 export function rawBackupText(raw){const data=JSON.parse(raw);if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('本地数据无法解析。');return JSON.stringify(sanitizeForExport(data),null,2);}
 export function parseBackup(text){if(text.length>5_000_000)throw new Error('备份过大，请使用 5 MB 以内的 JSON 文件。');const s=normalizeStore(JSON.parse(text));s.settings={...s.settings,aiConsent:null,aiDirect:null,ingest:null};s.captures=s.captures.map(c=>c.ingestStatus==='queued'?{...c,ingestStatus:'failed',ingestJobId:null,ingestError:'后台任务不会随备份迁移；可在这台设备重新尝试。'}:c);return s;}

@@ -15,6 +15,7 @@ export const SCENE_TEMPLATES={office:{name:'办公间隙',place:'office',minutes
 export const sceneDefaults=()=>({version:1,name:'',place:'home',minutes:10,activityIds:[],fixedIds:[],itemMinutes:{},dailyCount:3,cycleDays:7,weekdays:[0,1,2,3,4,5,6],enabled:true});
 export const sceneById=(state,id)=>(state.movementScenes||[]).find(x=>x.id===id);
 export function validateScene(x){
+ if(x?.poolPurpose!=null&&(typeof x.poolPurpose!=='string'||x.poolPurpose.length>1500))throw Error('场景用途描述格式无效。');
  if(!x||x.version!==1||typeof x.name!=='string'||!x.name.trim()||x.name.length>40||!Object.hasOwn(places,x.place)||!integer(x.minutes,2,120)||!integer(x.dailyCount,1,10)||!integer(x.cycleDays,1,90)||typeof x.enabled!=='boolean')throw Error('场景名称、时长或安排设置无效。');
  for(const key of ['activityIds','fixedIds'])if(!Array.isArray(x[key])||x[key].length>1000||x[key].some(v=>!idOK(v))||new Set(x[key]).size!==x[key].length)throw Error('场景动作清单格式无效。');
  if(x.fixedIds.some(id=>!x.activityIds.includes(id))||x.fixedIds.length>x.dailyCount)throw Error('每日固定项必须在动作池内，且不能超过单日动作数量。');

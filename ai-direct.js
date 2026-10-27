@@ -6,7 +6,7 @@ import { skillPrompts } from './skill-prompts.js';
 
 const TEMPERATURE = { intake: 0, plan: 0.4, log: 0, 'ability-intake': 0, 'source-brief': 0, 'knowledge-import': 0, 'creator-method': 0.3, 'knowledge-ask': 0.2, 'corpus-digest': 0.3, 'knowledge-search': 0.2, 'activity-intake': 0.2 };
 // 整理类任务可在 AI 设置里另选模型（同一服务商百炼，不需要重新授权）；「安排」始终用默认模型。
-export const ORGANIZE_SKILLS = ['log', 'ability-intake', 'source-brief', 'knowledge-import', 'creator-method', 'knowledge-ask', 'corpus-digest', 'knowledge-search', 'activity-intake'];
+export const ORGANIZE_SKILLS = ['log', 'ability-intake', 'source-brief', 'knowledge-import', 'creator-method', 'knowledge-ask', 'corpus-digest', 'knowledge-search', 'activity-intake','scene-pool'];
 export const ORGANIZE_MODELS = ['qwen3.8-flash', 'qwen3.8-max'];
 export const organizeModelAllowed = (skill, model) => ORGANIZE_SKILLS.includes(skill) && ORGANIZE_MODELS.includes(model);
 // 只有这些技能会让百炼联网搜索（用户在「AI 搜索」里主动提问时）。

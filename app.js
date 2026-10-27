@@ -43,6 +43,12 @@ import {scenesHTML,sceneEditorHTML,sceneSelectedHTML,readSceneForm,sceneProposal
 import {buildSceneAIInput,validateSceneAI} from './scene-ai.js';
 import {buildActionDiscoveryInput,webActionSource,webActionIntakeInput,saveWebActionSource} from './action-discovery.js';
 import {actionSearchForm,actionDiscoveryHTML,actionSourceForm} from './action-discovery-view.js';
+import {createStudio,upgradeStudio,pickStudioActivity,openStudioItem,markStudioDone,studioSetMetadata,studioRecordBlock,acknowledgeStudioItem,toggleStudioSelection,addStudioSelection,nextStudioGroupItem,finishStudioGroup,ungroupStudio,repeatSession,addStudioCustom,studioDataForStorage} from './training-studio.js';
+import {studioCandidatesHTML} from './training-studio-view.js';
+import {durationAt} from './training-duration.js';
+import {logConfirmationHTML} from './training-log-view.js';
+import {buildScenePoolInput,validateScenePool,mergePoolSuggestions,applyScenePoolSelection} from './scene-pool.js';
+import {scenePoolInputHTML,scenePoolResultsHTML} from './scene-pool-view.js';
 const $=s=>document.querySelector(s);
 const activityById=id=>activities.find(a=>a.id===id);
 let storageError=false,state,lastStored=null;let importDraft=null;
@@ -55,20 +61,20 @@ try {
 syncPersonalActivities(state);
 function locationRoute(){const [route,query='']=location.hash.slice(1).split('?');return {page:routes[route]?route:'today',knowledgeId:route==='knowledge'?new URLSearchParams(query).get('card'):null};}
 let {page,knowledgeId:knowledgeDetailId}=locationRoute(),knowledgeListScroll=0,dwellClock=null;
-let request=structuredClone(state.draft?.request||{minutes:20,place:'home',focus:state.profile.focus,readiness:'normal',targetRegions:[]});
+let request=structuredClone(state.draft?.request||{minutes:30,place:'home',focus:state.profile.focus,readiness:'normal',targetRegions:[]});
 let filters={search:'',category:'all',system:'all',place:'all',personal:'all'},knowledgeFilter='all',knowledgeTopic='',knowledgeKind='',knowledgeContentType='',toastTimer;
 const mediaUrls=new Map();
 const mediaBlobs=new Map();
 function rememberMediaBlob(key,blob){mediaBlobs.set(key,blob);if(mediaBlobs.size>48)mediaBlobs.delete(mediaBlobs.keys().next().value);}
 const aiState={ready:false,busy:false,mode:null,text:'',model:null,provider:'',consentId:null,paired:false,pairingRequired:false,optionsOpen:false,adjustText:''};let pendingSelfCheck=null,pendingLog=null,pendingAbility=null,pendingKnowledge=null,pendingMethod=null,pendingDigest=null,pendingSearch=null,pendingActivities=null;
 const ingestPolling=new Set(),ingestStarting=new Set();
-let pendingSceneProposal=null,pendingActionDiscovery=null;
+let pendingSceneProposal=null,pendingActionDiscovery=null,pendingScenePool=null;
 aiState.text=state.aiPending?.text||'';
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4500);}
 function commit(change){
   if(storageError){toast('本地数据暂时无法读取。已暂停保存，不覆盖原有记录。');return false;}
   const next=structuredClone(state);change(next);
-  try{if(localStorage.getItem(STORE_KEY)!==lastStored){toast('另一页面更新了记录，请刷新后重试，避免覆盖。');return false;}const serialized=JSON.stringify(next);localStorage.setItem(STORE_KEY,serialized);lastStored=serialized;state=next;syncPersonalActivities(state);return true;}
+  try{if(localStorage.getItem(STORE_KEY)!==lastStored){toast('另一页面更新了记录，请刷新后重试，避免覆盖。');return false;}const serialized=JSON.stringify(studioDataForStorage(next));localStorage.setItem(STORE_KEY,serialized);lastStored=serialized;state=next;syncPersonalActivities(state);return true;}
   catch{toast('保存失败：浏览器空间不足或存储不可用。请导出备份。');return false;}
 }
 function render(){
@@ -89,8 +95,8 @@ function paintDwell(){
 }
 function canLeaveAction(){
   if(timer){toast('请先结束或取消当前计时。');return false;}
-  const form=$('#app [data-set-form]');
-  if(form&&form.dataset.initial!==JSON.stringify([...new FormData(form)])){toast('本组输入还没有保存。请先保存本组，或点“撤销本组输入”。');return false;}
+  const forms=[...document.querySelectorAll('#app [data-set-form]')];
+  if(forms.some(form=>form.dataset.initial!==JSON.stringify([...new FormData(form)]))){toast('本组输入还没有保存。请先保存本组，或点“撤销本组输入”。');return false;}
   return true;
 }
 function enhanceKnowledgeFilters(){
@@ -101,7 +107,7 @@ function enhanceKnowledgeFilters(){
   const source=$('#app .kind-pills'),topic=$('#app .topic-pills');
   if(source||topic){const more=document.createElement('details');more.className='knowledge-more-filters';more.innerHTML='<summary>来源与主题筛选</summary>';if(source)more.append(source);if(topic)more.append(topic);bar.insertAdjacentElement('afterend',more);}
 }
-function navigate(next){if($('#sheet').open)$('#sheet').close();page=next;knowledgeDetailId=null;location.hash=next;render();window.scrollTo({top:0});}
+function navigate(next){if(state.draft?.studioVersion===1&&!canLeaveAction())return;if($('#sheet').open)$('#sheet').close();page=next;knowledgeDetailId=null;location.hash=next;render();window.scrollTo({top:0});}
 function openKnowledge(id){knowledgeListScroll=window.scrollY;page='knowledge';knowledgeDetailId=id;location.hash=`knowledge?card=${encodeURIComponent(id)}`;render();window.scrollTo({top:0});$('#knowledge-detail-title')?.focus({preventScroll:true});}
 function backToKnowledge(){knowledgeDetailId=null;page='knowledge';location.hash='knowledge';render();window.scrollTo({top:knowledgeListScroll});}
 window.addEventListener('hashchange',()=>{const next=locationRoute();if(page!==next.page||knowledgeDetailId!==next.knowledgeId){const returning=Boolean(knowledgeDetailId)&&next.page==='knowledge'&&!next.knowledgeId;if($('#sheet').open)$('#sheet').close();page=next.page;knowledgeDetailId=next.knowledgeId;render();window.scrollTo({top:returning?knowledgeListScroll:0});}});
@@ -136,6 +142,11 @@ function openActivityReview(result,context={}){
   showModal(result.manual?'自己填写动作':'核对并保存动作',activityIntakeForm({...result,web:Boolean(context.webSource),webInfo:context.webSource||null},id=>activityById(id)?.name||id,activityReviewPreview(context)));
 }
 function actionSearchDialog(sceneId='',question=''){if(!ensureAI())return;showModal('AI 搜索动作',actionSearchForm(sceneId,question));}
+function scenePoolDialog(sceneId,text=''){if(!ensureAI())return;const scene=sceneById(state,sceneId);if(!scene)return toast('请先保存这个场景。');pendingScenePool=null;showModal('AI 帮我建立动作池',scenePoolInputHTML(sceneId,text||scene.poolPurpose||''));}
+function requestScenePool(sceneId,question,previous=[]){
+ let built;try{built=buildScenePoolInput(state,sceneId,question,{previous});}catch(error){showModal('调整场景需求',scenePoolInputHTML(sceneId,question,error.message));return;}
+ if(!ensureAI())return;$('#sheet').close();withBusy(async()=>{try{const result=await askAI('scene-pool',built.input,x=>validateScenePool(x,built));if(result.status!=='ok'){showModal('补充一下需求',scenePoolInputHTML(sceneId,question,result.reason));return;}const old=previous.length?pendingScenePool:null;pendingScenePool={sceneId,question,intent:result.intent,suggestions:mergePoolSuggestions(previous,result.suggestions,built),checkedIds:old?.checkedIds||[]};const scene=sceneById(state,sceneId);if(!scene)throw Error('场景已移除，建议没有保存。');showModal('核对场景动作建议',scenePoolResultsHTML(pendingScenePool,scene));}catch(error){showModal('AI未完成，需求已保留',scenePoolInputHTML(sceneId,question,error.message));}});
+}
 function manualWebReview(web,context,name='',warning=''){openActivityReview({status:'ok',manual:true,warnings:warning?[warning]:[],candidates:[{type:'new',manual:true,name,evidenceQuote:web.userText.slice(0,300),lowTrust:true,draft:{name,description:web.userText.slice(0,200),category:'mobility',phase:'warmup',places:[sceneById(state,context.sceneId)?.place||'home']}}]},context);}
 function openManualActivityReview(context={},notice=''){
   const description=String(context.actionSegment?.description||'').slice(0,300);
@@ -263,7 +274,7 @@ function logInputDialog(text=''){showModal('粘贴训练记录',`<form id="ai-lo
 const actOptions=selected=>`<option value="">不关联动作库（自定义动作）</option>${Object.entries(systems).map(([sys,label])=>`<optgroup label="${label}">${activities.filter(a=>a.system===sys).map(a=>`<option value="${a.id}" ${a.id===selected?'selected':''}>${esc(a.name)}</option>`).join('')}</optgroup>`).join('')}`;
 function logConfirmDialog(){
   const {text,drafts,unparsed,warnings=[]}=pendingLog,dup=state.sessions.some(x=>x.rawText===text);
-  showModal('核对整理结果',`${dup?'<div class="notice error">这段文字之前已经导入过，保存会产生重复记录。</div>':''}${warnings.length?`<div class="notice error">${warnings.map(w=>`<p>${esc(w)}</p>`).join('')}</div>`:''}<form id="ai-log-confirm">${drafts.map((d,n)=>`<fieldset class="log-session"><legend>第 ${n+1} 次训练</legend><div class="field-row"><label>日期<input type="date" name="date_${n}" required value="${d.date||''}"></label><label>总时长（分钟）<input type="number" name="min_${n}" min="1" max="1440" value="${d.durationMinutes??''}" placeholder="未写"></label><label>费力程度<input type="number" name="effort_${n}" min="1" max="10" value="${d.effort??''}" placeholder="未写"></label></div>${d.items.map((i,k)=>`<div class="log-item"><label class="checkbox-line"><input type="checkbox" name="use_${n}_${k}" checked> <strong>${esc(i.name)}</strong>${i.matchConfidence==='low'&&i.activityId?' <span class="badge warm">匹配不确定</span>':''}${i.verified?'':' <span class="badge warm">原文中找不到，请核对</span>'}</label><p class="small muted">原文：${esc(i.sourceText||'（无）')}</p><div class="field-row"><label>对应动作<select name="act_${n}_${k}">${actOptions(i.activityId)}</select></label><label>名称<input name="name_${n}_${k}" value="${esc(i.name)}" maxlength="80"></label></div><label>组次<input name="sets_${n}_${k}" value="${esc(setsText(i.sets))}" placeholder="如 60kg×8、60kg×8 或 60秒；没有就留空"></label>${i.warnings?.length?`<div class="notice error">${i.warnings.map(w=>`<p>${esc(w)}</p>`).join('')}<label class="checkbox-line"><input type="checkbox" name="confirm_${n}_${k}">我已逐项核对或修正这些疑点</label></div>`:''}${i.sets.length&&i.durationMinutes==null&&i.distanceKm==null?`<input type="hidden" name="imin_${n}_${k}" value=""><input type="hidden" name="km_${n}_${k}" value="">`:`<div class="field-row"><label>时长（分钟）<input type="number" step="any" name="imin_${n}_${k}" value="${i.durationMinutes??''}"></label><label>距离（km）<input type="number" step="any" name="km_${n}_${k}" value="${i.distanceKm??''}"></label></div>`}${i.note?`<p class="small muted">备注：${esc(i.note)}</p>`:''}<input type="hidden" name="note_${n}_${k}" value="${esc(i.note)}"></div>`).join('')}<label>感受<textarea name="fb_${n}" maxlength="2000">${esc(d.feedback)}</textarea></label><label>身体情况（会同时存为身体随记）<textarea name="body_${n}" maxlength="2000">${esc(d.bodyNotes)}</textarea></label></fieldset>`).join('')}${unparsed.length?`<details><summary>${unparsed.length} 段文字未解析为训练</summary>${unparsed.map(u=>`<p>${esc(u)}</p>`).join('')}</details>`:''}<button class="primary full" type="submit">确认保存 ${icon('check')}</button><button class="secondary full" type="button" data-action="ai-log-retry">回到原文修改</button></form>`);
+  showModal('核对整理结果',logConfirmationHTML(pendingLog,{duplicate:dup,actOptions}));
 }
 function readLogConfirm(f){
   const num=v=>v===''||v==null?null:Number(v);
@@ -274,7 +285,7 @@ function finishDialog(){
   if(!canLeaveAction())return;
   const p=state.draft;if(!p)return;const completed=p.items.filter(i=>i.status==='completed');
   if(!completed.length){toast('先确认至少一个实际完成的动作。');return;}
-  showModal('练完了，留一点感受',`<p class="muted">已确认 ${completed.length} 个动作，其余将记为跳过。实际时长可留空，不使用计划时长代填。</p><form id="finish-form"><div class="field-row"><label>实际活动时长（分钟）<input name="actualMinutes" type="number" min="1" max="1440" step="1" placeholder="可选"></label><label>费力程度（1～10）<input name="effort" type="number" min="1" max="10" step="1" placeholder="可选"></label></div><label>这次整体感觉如何？<textarea name="feedback" maxlength="4000" placeholder="哪些做起来舒服？有什么新发现？"></textarea></label><details class="feedback-details"><summary>逐项记录组次和心得（可选）</summary>${completed.map(i=>`<div class="item-feedback"><label>${activityById(i.activityId).name} · 实际组次<input name="sets_${i.id}" value="${esc(setsText(i.actualSetDetails||[]))}" placeholder="${esc(i.prescription?.sets?`计划 ${i.prescription.sets} 组 × ${i.prescription.reps?`${i.prescription.reps} 次`:`${i.prescription.seconds||'?'} 秒`}，填实际完成，如 60kg×8、60kg×8`:'如 60kg×8、60kg×8 或 60秒')}"></label><label>心得<textarea name="item_${i.id}" maxlength="2000" placeholder="可选：这条会保存到本次记录"></textarea></label><label class="checkbox-line"><input type="checkbox" name="pin_${i.id}"> 同时保存为这个动作的长期心得</label></div>`).join('')}</details><p class="helper left">组次只记实际完成的，没填就留空，不用计划值代填。</p><button class="primary full" type="submit">保存这次训练 ${icon('check')}</button></form>`);
+  showModal('练完了，留一点感受',`<p class="muted">已确认 ${completed.length} 个动作，其余将记为跳过。实际时长可留空，不使用计划时长代填。</p><form id="finish-form"><div class="field-row"><label>实际活动时长（分钟）<input name="actualMinutes" type="number" min="1" max="1440" step="1" placeholder="可选"></label><label>费力程度（1～10）<input name="effort" type="number" min="1" max="10" step="1" placeholder="可选"></label></div><label>这次整体感觉如何？<textarea name="feedback" maxlength="4000" placeholder="哪些做起来舒服？有什么新发现？"></textarea></label><details class="feedback-details"><summary>逐项记录组次和心得（可选）</summary>${completed.map(i=>`<div class="item-feedback"><label>${esc(activityName(i))} · 实际组次<input name="sets_${i.id}" value="${esc(setsText(i.actualSetDetails||[]))}" placeholder="${esc(i.prescription?.sets?`计划 ${i.prescription.sets} 组 × ${i.prescription.reps?`${i.prescription.reps} 次`:`${i.prescription.seconds||'?'} 秒`}，填实际完成，如 60kg×8、60kg×8`:'如 60kg×8、60kg×8 或 60秒')}"></label><label>心得<textarea name="item_${i.id}" maxlength="2000" placeholder="可选：这条会保存到本次记录"></textarea></label><label class="checkbox-line"><input type="checkbox" name="pin_${i.id}"> 同时保存为这个动作的长期心得</label></div>`).join('')}</details><p class="helper left">组次只记实际完成的，没填就留空，不用计划值代填。</p><button class="primary full" type="submit">保存这次训练 ${icon('check')}</button></form>`);
 }
 function knowledgeDialog(id){
   const k=state.knowledge.find(k=>k.id===id);
@@ -459,7 +470,7 @@ function selfCheckStep(i){
   const t=SELF_CHECK_TASKS[i];showModal(t.title,selfCheckTaskForm(t,pendingSelfCheck.answers[t.id],i,SELF_CHECK_TASKS.length));
 }
 function observationDialog(){showModal('记一下身体状态',`<form id="observation-form"><label>现在的感受<textarea name="text" required maxlength="4000" placeholder="例如：昨天久坐比较多，今天颈部有些僵。写下时间、部位和哪些情况会加重。"></textarea></label><p class="helper left">保留你的原话，作为之后讨论的依据。持续或加重的不适需要专业评估。</p><button class="primary full" type="submit">保存随记 ${icon('check')}</button></form>`);}
-function sessionDialog(id){const s=state.sessions.find(x=>x.id===id);if(s)showModal(dateText(s.endedAt)+'的训练',`${s.planSnapshot&&s.items.some(i=>i.status==='completed')?`<button class="secondary full" data-save-session-template="${esc(s.id)}">${icon('bookmark')} 收藏这次训练，以后直接拿出来练</button>`:''}${sessionEditForm(s)}`);}
+function sessionDialog(id){const s=state.sessions.find(x=>x.id===id);if(s)showModal(dateText(s.endedAt)+'的训练',`${s.items.some(i=>i.status==='completed')?`<button class="primary full" data-repeat-session="${esc(s.id)}">${icon('play')} 再练一次（可增减动作）</button>`:''}${s.planSnapshot&&s.items.some(i=>i.status==='completed')?`<button class="secondary full" data-save-session-template="${esc(s.id)}">${icon('bookmark')} 收藏这次训练，以后直接拿出来练</button>`:''}${sessionEditForm(s)}`);}
 // 收藏训练：可以从还没开始的安排收藏，也可以从练完的记录收藏；名字可改。
 function templateDialog(from,id=''){
   const src=from==='session'?state.sessions.find(x=>x.id===id):state.draft;if(!src)return;
@@ -541,10 +552,10 @@ function stopTimer(record){
 }
 // 与手动 set-form 相同的记录路径:追加一组、标记完成、非「不舒服」则起回合间休息。
 function recordSet(id,set){
-  if(isFreeWorkout(state.draft)){const block=freeRecordingBlock(state.draft,state.profile,state.assessments);if(block){toast(block);return false;}}
+  if(isFreeWorkout(state.draft)){const item=state.draft.items.find(i=>i.id===id),block=state.draft.studioVersion===1?studioRecordBlock(state.draft,item,state.profile,state.assessments):freeRecordingBlock(state.draft,state.profile,state.assessments);if(block){toast(block);return false;}}
   validateSets([set]);
   const item0=state.draft?.items.find(i=>i.id===id);const a=item0&&activityById(item0.activityId);
-  const ok=commit(s=>{const i=s.draft.items.find(i=>i.id===id),actual={...set,...(isFreeWorkout(s.draft)?{phase:i.role}:{} )};Object.assign(i,setSummary([...(i.actualSetDetails||[]),actual]));i.status='completed';if(set.feeling==='discomfort'){s.draft.pausedForDiscomfort=true;s.observations.push({id:uid(),text:activityName(i)+'：本组出现不舒服',source:'self_report',createdAt:new Date().toISOString()});}});
+  const ok=commit(s=>{const i=s.draft.items.find(i=>i.id===id),actual={...set,...(s.draft.studioVersion===1?studioSetMetadata(s.draft,i):isFreeWorkout(s.draft)?{phase:i.role}:{} )};Object.assign(i,setSummary([...(i.actualSetDetails||[]),actual]));i.status='completed';delete i.studioDoneAt;if(set.feeling==='discomfort'){s.draft.pausedForDiscomfort=true;s.observations.push({id:uid(),text:activityName(i)+'：本组出现不舒服',source:'self_report',createdAt:new Date().toISOString()});}});
   if(ok){if(set.feeling==='discomfort'){rest=null;paintRest();}else startRest(item0);render();toast('已记录。');}
   return ok;
 }
@@ -631,6 +642,7 @@ document.addEventListener('click',e=>{
   }
   if(el.dataset.action==='daily-settings'){showModal('日常活动偏好',dailySettingsHTML(state));return;}
   if(el.dataset.action==='scene-create'||el.dataset.sceneTemplate||el.dataset.sceneEdit){showModal(el.dataset.sceneEdit?'调整场景':'创建场景',sceneEditorHTML(state,el.dataset.sceneEdit||null,el.dataset.sceneTemplate||null));return;}
+  if(el.dataset.scenePool){scenePoolDialog(el.dataset.scenePool);return;}
   if(el.hasAttribute('data-action-search')){actionSearchDialog(el.dataset.actionSearch||'');return;}
   if(el.hasAttribute('data-action-source')){const index=Number(el.dataset.actionSource);if(pendingActionDiscovery?.points[index])showModal('提供动作来源',actionSourceForm(pendingActionDiscovery,index));return;}
   if(el.hasAttribute('data-action-search-again')){actionSearchDialog(pendingActionDiscovery?.sceneId||'',pendingActionDiscovery?.question||'');return;}
@@ -660,9 +672,14 @@ document.addEventListener('click',e=>{
   if(el.dataset.removeActivityMedia){if(commit(s=>{const m=(s.activityMedia||[]).find(m=>m.id===el.dataset.removeActivityMedia);const p=s.personalActivities?.find(p=>p.id===m?.activityId);if(p?.source?.thumbnailId===m?.thumbnailId&&p?.source)p.source.thumbnailId=null;s.activityMedia=(s.activityMedia||[]).filter(m=>m.id!==el.dataset.removeActivityMedia);})){render();detail(el.dataset.activity);toast('已移除这张配图的关联；原知识卡和训练记录没有删除。');}return;}
   if(el.dataset.extractImage){const knowledgeId=el.dataset.extractImage,capture=state.captures.find(c=>c.knowledgeId===knowledgeId),image=capture?.imageEvidence?.find(x=>x.imageIndex===Number(el.dataset.imageIndex)),live=capture?.liveVideoEvidence?.find(x=>x.imageIndex===Number(el.dataset.imageIndex)&&x.status==='analyzed');if(!image&&!live)return toast('找不到可核对的图文或动态片段。');const evidence=image?[image]:[],segment={id:`image:${Number(el.dataset.imageIndex)}`,kind:'image_post',imageIndex:Number(el.dataset.imageIndex),thumbnail:image?.thumbnail||live?.coverThumbnail||null,description:[image?.observation||image?.text,live?.text?`动态小视频观察（AI）：${live.text}`:''].filter(Boolean).join('\\n'),startMs:null,endMs:null};extractActivities({capture:{...capture,shareText:'',transcript:null,videoEvidence:[],imageEvidence:evidence,liveVideoEvidence:live?[live]:[]},knowledgeId,actionSegment:segment,captureId:capture.id});return;}
   if(el.dataset.freeSelect||el.dataset.freeDeleteSet||el.dataset.freeRemove){
-    if(timer)return toast('请先结束或取消当前计时，再切换或修改动作。');
-    try{const ok=commit(s=>{if(el.dataset.freeSelect)selectFreeActivity(s.draft,el.dataset.freeSelect,s.profile,s.assessments);else if(el.dataset.freeDeleteSet)removeFreeSet(s.draft,el.dataset.freeDeleteSet,Number(el.dataset.index));else removeFreePending(s.draft,el.dataset.freeRemove);});if(ok){rest=null;paintRest();render();if(el.dataset.freeSelect)$('.free-active')?.scrollIntoView({block:'start',behavior:'smooth'});if(el.dataset.freeDeleteSet)toast('已删除这一组；可以重新填写。');}}catch(error){toast(error.message);}return;
+    if(!canLeaveAction())return;
+    try{const ok=commit(s=>{if(el.dataset.freeSelect)(s.draft.studioVersion===1?pickStudioActivity:selectFreeActivity)(s.draft,el.dataset.freeSelect,s.profile,s.assessments);else if(el.dataset.freeDeleteSet){removeFreeSet(s.draft,el.dataset.freeDeleteSet,Number(el.dataset.index));delete s.draft.items.find(i=>i.id===el.dataset.freeDeleteSet)?.studioDoneAt;}else{const id=el.dataset.freeRemove;removeFreePending(s.draft,id);if(s.draft.studioVersion===1){s.draft.studioGroups=s.draft.studioGroups.map(g=>({...g,itemIds:g.itemIds.filter(x=>x!==id)})).filter(g=>g.itemIds.length>1);s.draft.studioOpenId=null;}}});if(ok){rest=null;paintRest();render();if(el.dataset.freeSelect)$('.free-active')?.scrollIntoView({block:'start',behavior:'smooth'});if(el.dataset.freeDeleteSet)toast('已删除这一组；可以重新填写。');}}catch(error){toast(error.message);}return;
   }
+  if(el.dataset.studioOpen||el.dataset.studioDone||el.dataset.studioAdd||el.dataset.studioNext||el.dataset.studioFinishGroup||el.dataset.studioUngroup||el.dataset.studioLayout){
+    if(!canLeaveAction())return;try{if(commit(s=>{const p=s.draft;if(p?.studioVersion!==1)throw Error('请先进入新版记录台。');if(el.dataset.studioOpen)openStudioItem(p,el.dataset.studioOpen);if(el.dataset.studioDone)markStudioDone(p,el.dataset.studioDone);if(el.dataset.studioAdd)addStudioSelection(p,s.profile,s.assessments,el.dataset.studioAdd==='group');if(el.dataset.studioNext)nextStudioGroupItem(p,el.dataset.studioNext);if(el.dataset.studioFinishGroup)finishStudioGroup(p,el.dataset.studioFinishGroup);if(el.dataset.studioUngroup)ungroupStudio(p,el.dataset.studioUngroup);if(el.dataset.studioLayout)p.freeConfig.layout=el.dataset.studioLayout==='flat'?'flat':'stack';})){rest=null;paintRest();render();}}catch(error){toast(error.message);}return;
+  }
+  if(el.dataset.studioAck){showModal('只补记已完成的事实',`<form id="studio-ack-form" data-item="${esc(el.dataset.studioAck)}"><p>当前存在身体限制，本入口不提供继续开练的指导。仅用于如实补记已经做过的内容。</p><label class="checkbox-line"><input type="checkbox" name="confirmed" required>我确认只补记实际已完成内容</label><button class="primary full" type="submit">确认并返回记录</button></form>`);return;}
+  if(el.dataset.repeatSession){if(!canLeaveAction())return;try{if(commit(s=>s.draft=repeatSession(s,el.dataset.repeatSession))){$('#sheet').close();navigate('today');}}catch(error){toast(error.message);}return;}
   if(el.dataset.manualVideoSummary){manualVideoSummaryDialog(el.dataset.manualVideoSummary);return;}
   if(el.dataset.copyVideoUrl){const capture=state.captures.find(c=>c.id===el.dataset.copyVideoUrl);if(!capture?.rawUrl)return toast('找不到原视频链接。');if(!navigator.clipboard?.writeText)return toast('当前浏览器不允许读取剪贴板，请从知识卡点“打开原视频”。');navigator.clipboard.writeText(capture.rawUrl).then(()=>toast('已复制原视频链接。')).catch(()=>toast('当前浏览器不允许读取剪贴板，请从知识卡点“打开原视频”。'));return;}
   if(el.dataset.logSet){setDialog(el.dataset.logSet);return;}
@@ -719,7 +736,10 @@ document.addEventListener('click',e=>{
   if(el.dataset.replace){const a=replaceItem(state.draft,el.dataset.replace,state.profile);if(!a){toast('没有满足同一目标和器械条件的替代。');return;}if(commit(s=>applyReplacement(s.draft,el.dataset.replace,a))){render();toast('已替换；旧重量、组次和理由已清除。');}return;}
   switch(el.dataset.action){
     case 'export-media':{if(storageError){toast('当前记录读取异常，请先使用纯文字救援备份。');break;}el.disabled=true;buildMediaBackup(state).then(({text,imageCount,missing})=>{const url=URL.createObjectURL(new Blob([text],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=`循动含图备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast(`已导出 ${imageCount} 张本机图片${missing.length?`；另有 ${missing.length} 张本机已缺失，无法补入`:''}。`);}).catch(e=>toast(e.message)).finally(()=>el.disabled=false);break;}
-    case 'free-start':if(state.draft){toast('请先保存或撤下当前训练。');break;}showModal('我自己练',freeStartForm(request));break;
+    case 'free-start':if(state.draft){toast('请先保存或撤下当前训练。');break;}if(commit(s=>s.draft=createStudio({...request,place:request.place||'home'},s.profile,s.assessments)))render();break;
+    case 'studio-custom':if(!canLeaveAction())break;showModal('手写训练项',`<form id="studio-custom-form"><label>动作名称<input name="name" required maxlength="80"></label><p class="helper left">仅添加到本次训练，不假装已经识别或加入动作库。</p><button class="primary full" type="submit">添加到本次</button></form>`);break;
+    case 'studio-upgrade':if(canLeaveAction()&&commit(s=>upgradeStudio(s.draft)))render();break;
+    case 'studio-restore':if(state.draft){toast('先处理当前训练，不会覆盖。');break;}if(commit(s=>{s.draft=s.parkedStudioDraft;delete s.parkedStudioDraft;}))render();break;
     case 'close':$('#sheet').close();break;
     case 'generate':generateLocal();break;
     case 'generate-smart':aiState.text=$('#ai-text')?.value||'';if(!aiState.text.trim()&&state.aiPending)commit(s=>s.aiPending=null);if(aiState.text.trim()&&(!state.settings?.aiConsent||!aiState.paired)){aiSettings();break;}if(aiState.ready&&state.settings?.aiConsent){if(ensureAI())withBusy(aiPlan,'plan');}else generateLocal();break;
@@ -776,8 +796,8 @@ document.addEventListener('click',e=>{
 });
 document.addEventListener('change',e=>{if(e.target.matches('[data-reference-mode]')){const mode=['auto','selected','none'].includes(e.target.value)?e.target.value:'auto';if(commit(s=>{s.settings.planningReferences={mode,selectedIds:s.settings.planningReferences?.selectedIds||[]};s.settings.useCorpus=mode!=='none';})){render();toast(mode==='auto'?'会按今天情况自动挑选资料。':mode==='selected'?'本次只参考你勾选的资料。':'这次安排不参考知识库。');}return;}if(e.target.matches('[data-reference-id]')){const id=e.target.dataset.referenceId,on=e.target.checked;if(commit(s=>{const p=s.settings.planningReferences||{mode:'auto',selectedIds:[]},ids=new Set(p.selectedIds||[]);on?ids.add(id):ids.delete(id);s.settings.planningReferences={...p,mode:'selected',selectedIds:[...ids]};s.settings.useCorpus=true;})){render();}else render();return;}if(e.target.id==='method-card'||e.target.id==='method-mode'){const id=$('#method-card')?.value||null,mode=$('#method-mode')?.value||'inspiration';if(commit(s=>s.settings.methodPreference=id?{creatorProfileId:id,mode}:null)){render();toast(id?`下次 AI 安排会按「${state.creatorProfiles.find(p=>p.id===id)?.title}」· ${METHOD_MODES[mode].label}。`:'不按创作者方法安排。');}return;}if(e.target.dataset.activityPlanning){const id=e.target.dataset.activityPlanning,use=e.target.value;try{if(commit(s=>setActivityPlanning(s,id,use))){render();detail(id);toast(use==='allowed'?'之后的安排可以自动选到它了。':'改为仅手动使用。');}}catch(error){e.target.value=state.personalActivities.find(p=>p.id===id)?.planningUse||'manual_only';toast(error.message);}return;}if(e.target.dataset.topicPlanning){const id=e.target.dataset.topicPlanning,on=e.target.checked;if(commit(s=>setTopicPlanning(s,id,on))){render();toast(on?'这张主题总结会参与安排。':'这张主题总结不再参与安排。');}else render();return;}if(e.target.id==='use-corpus'){const on=e.target.checked;if(commit(s=>{s.settings.useCorpus=on;s.settings.planningReferences={mode:on?'auto':'none',selectedIds:s.settings.planningReferences?.selectedIds||[]};}))toast(on?'安排时会参考你的知识库。':'这之后的安排不参考知识库。');return;}if(e.target.matches('[data-ai-organize-model]')){const m=ORGANIZE_MODELS.includes(e.target.value)?e.target.value:null;if(commit(s=>s.settings.aiOrganizeModel=m))toast(m?`整理类任务将使用 ${m}。`:'整理类任务改回和安排用同一个模型。');return;}if(e.target.dataset.methodPlanning){const id=e.target.dataset.methodPlanning,allowed=e.target.checked;if(commit(s=>setMethodPlanning(s,id,allowed))){render();toast(allowed?'已允许这张方法卡参与安排。':'已取消用于安排。');}else render();return;}if(e.target.dataset.abilityUse){const id=e.target.dataset.abilityUse,use=e.target.value,a=state.assessments.find(a=>a.id===id);if(a&&allowedUses(a).includes(use)&&commit(s=>s.assessments.find(a=>a.id===id).recommendationUse=use)){render();toast(use==='gentle_preference'?'已设为温和参考，会参与之后的安排。':'已更新用途。');}else render();return;}if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness'){request.readiness=e.target.value;refreshFollowAlong();}if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
 document.addEventListener('input',e=>{if(e.target.matches?.('#capture-form [name=shareText]'))showCaptureDetection();if(e.target.id==='ai-text'){aiState.text=e.target.value;refreshFollowAlong();}if(e.target.id==='activity-search'){const pos=e.target.selectionStart;filters.search=e.target.value;render();const input=$('#activity-search');input.focus();input.setSelectionRange(pos,pos);}});
-document.addEventListener('change',e=>{if(['training-minutes','training-range'].includes(e.target.id)){const minutes=Number(e.target.value);if(!Number.isInteger(minutes)||minutes<10||minutes>120){e.target.value=request.minutes;toast('正式训练请输入 10～120 的整数分钟。');return;}request={...request,minutes,timeMode:'training'};render();}});
-document.addEventListener('input',e=>{if(e.target.id==='training-range'){request={...request,minutes:Number(e.target.value),timeMode:'training'};$('#training-minutes').value=request.minutes;refreshFollowAlong();}});
+document.addEventListener('change',e=>{if(['training-minutes','training-range'].includes(e.target.id)){const minutes=e.target.id==='training-range'?durationAt(Number(e.target.value),JSON.parse(e.target.dataset.minuteChoices||'[]')):Number(e.target.value);if(!Number.isInteger(minutes)||minutes<10||minutes>120){if(e.target.id==='training-minutes')e.target.value=request.minutes;toast('正式训练请输入 10～120 的整数分钟。');return;}request={...request,minutes,timeMode:'training'};render();}});
+document.addEventListener('input',e=>{if(e.target.id==='training-range'){const minutes=durationAt(Number(e.target.value),JSON.parse(e.target.dataset.minuteChoices||'[]'));if(minutes==null)return;request={...request,minutes,timeMode:'training'};$('#training-minutes').value=request.minutes;e.target.setAttribute('aria-valuetext',`${minutes}分钟`);refreshFollowAlong();}});
 let plannerDrag=null;
 document.addEventListener('pointerdown',e=>{const handle=e.target.closest('[data-planner-drag]');if(!handle||e.button!==0)return;e.preventDefault();plannerDrag={handle,pointerId:e.pointerId};handle.setPointerCapture(e.pointerId);handle.closest('[data-planner-section]').classList.add('is-dragging');});
 document.addEventListener('pointermove',e=>{if(!plannerDrag||e.pointerId!==plannerDrag.pointerId)return;const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('[data-planner-section]'),item=plannerDrag.handle.closest('[data-planner-section]');if(!target||target===item||target.parentNode!==item.parentNode)return;const box=target.getBoundingClientRect();target.parentNode.insertBefore(item,e.clientY<box.top+box.height/2?target:target.nextSibling);});
@@ -786,15 +806,17 @@ document.addEventListener('pointerup',finishPlannerDrag);document.addEventListen
 document.addEventListener('change',e=>{
   const key=e.target.dataset.freeConfig,roleId=e.target.dataset.freeRole;
   if(!isFreeWorkout(state.draft)||!key&&!roleId)return;
+  if(state.draft.studioVersion===1&&key==='sort'){const value=e.target.value;if(!Object.hasOwn(FREE_SORTS,value))return;if(commit(s=>s.draft.freeConfig.sort=value))$('#studio-candidates').innerHTML=studioCandidatesHTML(state);return;}
   try{const value=e.target.value;if(key&&!(key==='region'&&freeRegionLabels[value]||key==='phase'&&['all','warmup','main','cooldown'].includes(value)||key==='sort'&&FREE_SORTS[value]))return;
     if(roleId&&!['warmup','main','cooldown'].includes(value))return;
     if(commit(s=>{if(roleId)s.draft.items.find(i=>i.id===roleId).role=value;else s.draft.freeConfig[key]=value;}))render();
   }catch(error){toast(error.message);}
 });
+document.addEventListener('change',e=>{if(!e.target.dataset.studioPick)return;try{if(commit(s=>toggleStudioSelection(s.draft,e.target.dataset.studioPick,e.target.checked)))$('#studio-candidates').innerHTML=studioCandidatesHTML(state);else e.target.checked=!e.target.checked;}catch(error){e.target.checked=!e.target.checked;toast(error.message);}});
 document.addEventListener('input',e=>{
   if(e.target.id!=='free-search'||!isFreeWorkout(state.draft))return;
   const pos=e.target.selectionStart,value=e.target.value.slice(0,100);
-  if(commit(s=>s.draft.freeConfig.search=value)){render();const input=$('#free-search');input.focus();input.setSelectionRange(pos,pos);}
+  if(commit(s=>s.draft.freeConfig.search=value)){if(state.draft.studioVersion===1){$('#studio-candidates').innerHTML=studioCandidatesHTML(state);return;}render();const input=$('#free-search');input.focus();input.setSelectionRange(pos,pos);}
 });
 document.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.target,f=new FormData(form);
@@ -809,6 +831,8 @@ document.addEventListener('submit',async e=>{
       const plan=createFreeWorkout(Object.fromEntries(f),state.profile,state.assessments);
       if(commit(s=>s.draft=plan)){$('#sheet').close();render();}return;
     }
+    if(form.id==='studio-custom-form'){ok=commit(s=>addStudioCustom(s.draft,f.get('name')));if(ok){$('#sheet').close();render();}return;}
+    if(form.id==='studio-ack-form'){if(!f.get('confirmed'))throw Error('请先确认。');ok=commit(s=>acknowledgeStudioItem(s.draft,form.dataset.item,s.profile,s.assessments));if(ok){$('#sheet').close();render();}return;}
     if(form.id==='ai-consent-form'){
       if(!f.get('consent'))throw new Error('需要你确认发送范围。');
       const res=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:f.get('code')||''})});const data=await res.json();if(!res.ok)throw new Error(data.error||'配对失败');
@@ -851,7 +875,15 @@ document.addEventListener('submit',async e=>{
       if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(!oldId&&preferVideoIngest(capture)){startIngest(captureId);}else if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。配置自动视频整理后可一键转写。');}return;
     }
     if(form.id==='scene-form'){
-      try{const input={...readSceneForm(f),templateKey:form.dataset.template||null};let savedId;ok=commit(s=>{savedId=saveScene(s,input,form.dataset.id||null).id;});if(ok){$('#sheet').close();render();toast('场景已保存；已有今日清单不重排。');if(e.submitter?.dataset.after==='search')actionSearchDialog(savedId);}}catch(error){const notice=form.querySelector('.scene-form-error');notice.hidden=false;notice.textContent=error.message;}return;
+      try{const input={...readSceneForm(f),templateKey:form.dataset.template||null};let savedId;ok=commit(s=>{savedId=saveScene(s,input,form.dataset.id||null).id;});if(ok){$('#sheet').close();render();toast('场景已保存；已有今日清单不重排。');if(e.submitter?.dataset.after==='search')actionSearchDialog(savedId);if(e.submitter?.dataset.after==='pool')scenePoolDialog(savedId);}}catch(error){const notice=form.querySelector('.scene-form-error');notice.hidden=false;notice.textContent=error.message;}return;
+    }
+    if(form.id==='scene-pool-input'){requestScenePool(form.dataset.scene,String(f.get('question')||'').trim());return;}
+    if(form.id==='scene-pool-more'){
+      if(!pendingScenePool)throw Error('建议已失效，请重新输入需求。');pendingScenePool.checkedIds=new FormData($('#scene-pool-add')).getAll('keep');const text=String(f.get('question')||'').trim();if(!text)throw Error('请写下补充要求。');requestScenePool(pendingScenePool.sceneId,pendingScenePool.question+'\n补充：'+text,pendingScenePool.suggestions);return;
+    }
+    if(form.id==='scene-pool-add'){
+      if(!pendingScenePool)throw Error('建议已失效，请重新分析。');const scene=sceneById(state,pendingScenePool.sceneId);if(!scene)throw Error('场景已移除。');const ids=e.submitter?.dataset.choice==='preferred'?pendingScenePool.suggestions.filter(x=>x.priority==='preferred'&&!scene.activityIds.includes(x.activityId)).map(x=>x.activityId):f.getAll('keep');
+      let added;ok=commit(s=>{added=applyScenePoolSelection(s,pendingScenePool,ids);});if(ok){pendingScenePool.checkedIds=[];render();showModal('动作池已补充',`<p class="notice">已添加${added.length}个动作，固定项和今日清单没有更改。</p>${scenePoolResultsHTML(pendingScenePool,sceneById(state,pendingScenePool.sceneId))}`);}return;
     }
     if(form.id==='scene-ai-form'){
       if(!ensureAI())return;const sceneId=form.dataset.scene,built=buildSceneAIInput(state,sceneId,f.get('text'),currentFollowRequest());$('#sheet').close();
@@ -1002,10 +1034,10 @@ document.addEventListener('submit',async e=>{
     if(form.id==='manual-log-form'){const {sessions}=logToRecords([{date:f.get('date'),durationMinutes:f.get('minutes')===''?null:Number(f.get('minutes')),effort:null,feedback:f.get('note'),items:[{name:f.get('name').trim(),activityId:null,sets:[],note:f.get('note'),durationMinutes:null,distanceKm:null,confirmed:true}]}],'');ok=commit(s=>{s.sessions.push(...sessions);s.sessions.sort((a,b)=>new Date(a.endedAt)-new Date(b.endedAt));});}
     if(form.hasAttribute('data-set-form')){
       if(state.draft?.pausedForDiscomfort)throw new Error('请先结束这次活动，不继续增加负荷。');
-      if(isFreeWorkout(state.draft)){const block=freeRecordingBlock(state.draft,state.profile,state.assessments);if(block)throw new Error(block);}
+      if(isFreeWorkout(state.draft)){const item=state.draft.items.find(i=>i.id===form.dataset.item),block=state.draft.studioVersion===1?studioRecordBlock(state.draft,item,state.profile,state.assessments):freeRecordingBlock(state.draft,state.profile,state.assessments);if(block)throw new Error(block);}
       const number=k=>{const v=f.get(k);return v==null||v===''?null:Number(v);};const set={reps:number('reps'),seconds:number('seconds'),loadKg:number('loadKg'),loadBasis:f.get('loadBasis')||undefined,feeling:f.get('feeling')};validateSets([set]);
       const inSheet=$('#sheet').open;
-      const id=form.dataset.item;ok=commit(s=>{const i=s.draft.items.find(i=>i.id===id),actual={...set,...(isFreeWorkout(s.draft)?{phase:i.role}:{} )};Object.assign(i,setSummary([...(i.actualSetDetails||[]),actual]));i.status='completed';if(set.feeling==='discomfort'){s.draft.pausedForDiscomfort=true;s.observations.push({id:uid(),text:activityName(i)+'：本组出现不舒服',source:'self_report',createdAt:new Date().toISOString()});}});
+      const id=form.dataset.item;ok=commit(s=>{const i=s.draft.items.find(i=>i.id===id),actual={...set,...(s.draft.studioVersion===1?studioSetMetadata(s.draft,i):isFreeWorkout(s.draft)?{phase:i.role}:{} )};Object.assign(i,setSummary([...(i.actualSetDetails||[]),actual]));i.status='completed';delete i.studioDoneAt;if(set.feeling==='discomfort'){s.draft.pausedForDiscomfort=true;s.observations.push({id:uid(),text:activityName(i)+'：本组出现不舒服',source:'self_report',createdAt:new Date().toISOString()});}});
       if(ok){if(set.feeling==='discomfort'){rest=null;paintRest();}else startRest(state.draft.items.find(i=>i.id===id));if(inSheet)setDialog(id);render();toast('本组已保存。');}return;
     }
     if(form.id==='ai-clarify-form'){const answer=f.get('answer').trim();if(!answer)throw new Error('写一点回答再继续。');$('#sheet').close();
