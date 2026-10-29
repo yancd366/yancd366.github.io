@@ -1,0 +1,23 @@
+(async function(){
+ const nativeFetch=window.fetch.bind(window);let adapter,storageId;
+ function download(value){const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download='whereitis-web-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);}
+ function failed(error){if(document.querySelector('#storage-failed'))return;const layer=document.createElement('div');layer.className='web-storage-failure';layer.id='storage-failed';const box=document.createElement('div'),h=document.createElement('h2'),p=document.createElement('p'),backup=document.createElement('button'),reload=document.createElement('button');h.textContent='这次还没有可靠保存';p.textContent=error.message||'本机存储暂时不可用，请先备份本页记录。';backup.textContent='下载本页备份';backup.onclick=()=>download(adapter?.snapshot()||window.WhereitisWeb?.adapter?.read()||{});reload.textContent='备份后刷新';reload.className='secondary';reload.onclick=()=>{if(confirm('请先确认备份已下载，再刷新。本页尚未保存的修改将丢失。'))location.reload();};box.append(h,p,backup,reload);layer.append(box);document.body.append(layer);}
+ function status(state,error){const el=document.querySelector('#local-save-status');if(el)el.textContent=state==='pending'?'正在保存…':state==='saved'?'已存本机':'保存失败';if(state==='failed')failed(error);}
+ function reauth(){if(document.querySelector('#trial-reauth'))return;const layer=document.createElement('div');layer.className='web-storage-failure';layer.id='trial-reauth';const box=document.createElement('div'),h=document.createElement('h2'),p=document.createElement('p'),form=document.createElement('form'),input=document.createElement('input'),button=document.createElement('button'),error=document.createElement('p'),backup=document.createElement('button');h.textContent='重新连接试用';p.textContent='原话和照片仍在本页，请重新输入原邀请码后重试。';input.type='password';input.placeholder='原邀请码';input.maxLength=128;input.required=true;input.setAttribute('aria-label','原邀请码');button.type='submit';button.textContent='恢复连接';backup.textContent='下载已录入记录';backup.className='secondary';backup.onclick=()=>download(adapter.snapshot());form.append(input,button,error);form.onsubmit=async e=>{e.preventDefault();button.disabled=true;try{const r=await nativeFetch('/trial/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:input.value,storageId})}),d=await r.json();if(!r.ok)throw new Error(d.error);layer.remove();}catch(e){error.textContent=e.message;}finally{button.disabled=false;}};box.append(h,p,form,backup);layer.append(box);document.body.append(layer);}
+ window.fetch=async(...args)=>{const r=await nativeFetch(...args);const url=new URL(typeof args[0]==='string'?args[0]:args[0].url,location.href);if(url.origin===location.origin&&url.pathname.startsWith('/api/')&&r.status===401)reauth();return r;};
+ try{
+  const r=await nativeFetch('/trial/session');if(!r.ok){location.replace(window.WhereitisPages?.loginUrl||'/');return;}({storageId}=await r.json());window.WhereitisWeb={storageId,download,reauth};
+  for(const src of window.WhereitisWebFiles){
+   if(new URL(src,location.href).pathname.endsWith('/preview.js')){
+    const empty=window.Whereitis.seed();for(const key of ['places','items','events','care'])empty[key]=[];
+    adapter=await window.WhereitisTrialStorage.open(storageId,empty,status);window.WhereitisWeb.adapter=adapter;
+   }
+   await new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=src;s.onload=resolve;s.onerror=()=>reject(new Error('页面资源加载失败，请检查网络后刷新'));document.body.append(s);});
+  }
+  status('saved');
+  if(navigator.storage?.persist)navigator.storage.persist().catch(()=>{});
+  window.addEventListener('beforeunload',e=>{if(adapter.isPending()&&!adapter.error()){e.preventDefault();e.returnValue='';}});
+  const watcher=new MutationObserver(()=>{if(document.querySelector('#web-trial-note'))return;if(document.querySelector('#home-text')||document.querySelector('.remember-box')){const note=document.createElement('div');note.id='web-trial-note';note.className='trial-banner';note.textContent='你的记忆从这里开始。记录仅存当前浏览器，可在设置里下载含照片的备份。';if(!adapter.read().items.length&&!adapter.read().supplyLots?.length)document.querySelector('#app').prepend(note);}});watcher.observe(document.querySelector('#app'),{childList:true});
+  if(!adapter.read().items.length){const note=document.createElement('div');note.className='trial-banner';note.id='web-trial-note';note.textContent='试着说：“剪刀放在卧室抽屉里。” 核对保存后，就能在下面找它。';document.querySelector('#app').prepend(note);}
+ }catch(error){document.querySelector('#app').textContent='';failed(error);}
+})();

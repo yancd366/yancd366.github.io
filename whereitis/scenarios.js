@@ -1,0 +1,7 @@
+(function(root,factory){if(typeof module==='object'&&module.exports)module.exports=factory();else root.WhereitisScenarios=factory();})(typeof globalThis!=='undefined'?globalThis:this,function(){
+ const kinds=[{value:'room',label:'房间',icon:'⌂'},{value:'vehicle',label:'车',icon:'🚗'},{value:'garage',label:'车库',icon:'▤'},{value:'storage',label:'储藏空间',icon:'▣'},{value:'other',label:'其他',icon:'◇'}];
+ const templates=[{name:'卧室',type:'room'},{name:'客厅',type:'room'},{name:'我的车',type:'vehicle'},{name:'车库',type:'garage'},{name:'储物间',type:'storage'}];
+ const examples=[{title:'剪指甲刀、剪刀',text:'我把剪指甲刀放在卧室电脑桌右侧抽屉。',why:'随手用完，顺口记一句。',flow:'先记录放置；下次搜“剪指甲刀”即可。'},{title:'备用钥匙',text:'备用钥匙放在玄关的蓝色收纳盒里。',why:'备用物品不常用，容易忘记。',flow:'给备用和常用钥匙起不同名字，再记清盒子颜色与位置。'},{title:'充电线、转接头',text:'备用充电线放在我的车的手套箱里。',why:'家里、包里、车里容易混淆。',flow:'车也是一个空间，可以继续添加手套箱、后备箱。'},{title:'遥控器、电池',text:'客厅空调遥控器今天换了两节7号电池。',why:'物品位置和电池更换时间分开记录。',flow:'放哪记在首页；换电池记在养护记录。'},{title:'卷尺、螺丝刀、胶带',text:'卷尺放在车库墙边工具柜第二层。',why:'同类工具集中放，偶尔用时更难记。',flow:'先确认工具柜的叫法，再逐件补充。'},{title:'眼镜、耳机',text:'备用眼镜放在卧室床头柜的眼镜盒里。',why:'常用与备用物品需要区分。',flow:'用“备用眼镜”“黑色耳机”这样的名字或别名区分。'},{title:'鞋子清洗',text:'这双白色跑鞋上周日清洗了。',why:'每双鞋有自己的照片与清洗历史。',flow:'养护里选择鞋子清洗，给这一双拍照，选择实际日期。'},{title:'冰箱、床垫与除螨',text:'今天清洁了厨房冰箱；床垫做了除螨。',why:'不同对象、不同动作分别记。',flow:'各建一个养护对象，按实际完成记录，不把提醒当作已经做了。'}];
+ function kind(value){return kinds.find(k=>k.value===value)||kinds[0];}
+ return {kinds,templates,examples,kind};
+});

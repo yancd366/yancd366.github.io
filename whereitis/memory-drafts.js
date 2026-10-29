@@ -1,0 +1,10 @@
+(function(root,factory){if(typeof module==='object'&&module.exports)module.exports=factory(require('./domain'));else root.WhereitisMemoryDrafts=factory(root.Whereitis);})(typeof globalThis!=='undefined'?globalThis:this,function(D){
+ function prepare(store,result,old,text,context){const warnings=[];const items=result.items.map((x,i)=>{if(result.placement&&!x.storageOnly&&x.action!=='purchased')x={...x,action:'placed',roomName:result.placement.roomName||'',placeName:result.placement.placeName};const previous=x.previousDraftKey?(old||[]).find(r=>r.uiKey===x.previousDraftKey||r.draftId===x.previousDraftKey):null;return {...x,...previous?.userEdits,uiKey:previous?(previous.uiKey||previous.draftId):'memory_'+Date.now()+'_'+i+'_'+Math.random().toString(36).slice(2,7),userEdits:previous?.userEdits||{},keepPhoto:x.source!=='spoken'&&(previous?.keepPhoto!==false),selected:previous?.selectionEdited?previous.selected:true,selectionEdited:previous?.selectionEdited};});
+ const located=D.prepareLocatedDrafts(store,{items},text+(context?'\n已选空间：'+context:''));items.forEach((x,i)=>{const r=D.fillVoiceMatch(store,located[i],0);r.quantity=x.quantity==null?'':x.quantity;x.locationDraft=r;});
+ for(const x of old||[])if(Object.keys(x.userEdits||{}).length&&!items.some(y=>y.uiKey===x.uiKey)){items.push({...x,draftId:'retained_'+(x.uiKey||x.draftId),relation:null});warnings.push('保留未能对应的手动草稿「'+x.name+'」，请核对是否重复。');}
+ return {...result,items,warnings:(result.warnings||[]).concat(warnings)};
+ }
+ function input(store,x,text){const r={...x.locationDraft,selected:true};for(const key of ['name','category','quantity','aliases','note','color','brand','size','clothingType','material','materialSource','materialEvidence'])if(x[key]!==undefined)r[key]=x[key];r.matchIndex=0;const out=D.voiceInputs(store,[r],text)[0];out.source='图片与原话 · 你已确认';return out;}
+ function shared(items){const rows=items.filter(x=>x.selected&&x.locationDraft?.action==='placed').map(x=>x.locationDraft);if(!rows.length||rows.some(r=>r.locationMention!==rows[0].locationMention||r.roomName!==rows[0].roomName))return null;return rows[0];}
+ return {prepare,input,shared};
+});

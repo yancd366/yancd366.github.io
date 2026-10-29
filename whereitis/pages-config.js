@@ -1,0 +1,1 @@
+window.WhereitisPages={"apiBase":"https://whereitis-web-lunalzfmdi.cn-hangzhou.fcapp.run","basePath":"/whereitis/","loginUrl":"https://yancd366.github.io/whereitis/","appUrl":"https://yancd366.github.io/whereitis/app.html"};

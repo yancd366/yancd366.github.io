@@ -1,0 +1,28 @@
+(function(root,factory){if(typeof module==='object'&&module.exports)module.exports=factory(require('./space'));else root.WhereitisSpaceReview=factory(root.WhereitisSpace);})(typeof globalThis!=='undefined'?globalThis:this,function(Space){
+const clone=x=>JSON.parse(JSON.stringify(x));
+const relations=[{value:'near',label:'靠近'},{value:'left_of',label:'在左边'},{value:'right_of',label:'在右边'},{value:'on',label:'在上方'},{value:'under',label:'在下方'},{value:'inside',label:'在里面'},{value:'opposite',label:'正对'}];
+function view(report){return report.rooms.map((room,roomIndex)=>{
+ const options=[{ref:null,name:'直接属于这个空间'}].concat(room.places.map(p=>({ref:p.ref,name:Space.placePath(room,p.ref)})));
+ const places=room.places.map((p,index)=>{const parents=options.filter(x=>{let node=room.places.find(v=>v.ref===x.ref);while(node){if(node.ref===p.ref)return false;node=room.places.find(v=>v.ref===node.parentRef);}return true;});const textProof=p.evidence.some(e=>report.sources.find(s=>s.id===e.sourceId)?.type==='text');return {...p,index,basisLabel:textProof?'文字 / 手动补充':p.visibility==='visible'?'照片可见':p.visibility==='partial'?'部分可见':'待确认',parents,parentIndex:Math.max(0,parents.findIndex(x=>x.ref===p.parentRef)),proof:p.evidence.map(e=>e.detail).join('；')};});
+ const relationOptions=options.slice(1);return {...room,index:roomIndex,places,options,relationOptions,observedItems:room.observedItems.map((x,index)=>({...x,index,proof:x.evidence.map(e=>e.detail).join('；'),placeIndex:Math.max(0,options.findIndex(o=>o.ref===x.placeRef))})),relations:room.relations.map((x,index)=>({...x,index,proof:x.evidence.map(e=>e.detail).join('；'),fromIndex:Math.max(0,relationOptions.findIndex(o=>o.ref===x.fromRef)),toIndex:Math.max(0,relationOptions.findIndex(o=>o.ref===x.toRef)),relationIndex:relations.findIndex(o=>o.value===x.relation)}))};
+});}
+function evidence(report,detail){let source=report.sources.find(s=>s.type==='text'&&s.label==='用户手动更正');if(!source){if(report.sources.length>=30)throw new Error('来源记录已满，请另存一批观察后再补充');let id='manual_01';for(let i=2;report.sources.some(x=>x.id===id);i++)id='manual_'+String(i).padStart(2,'0');source={id,type:'text',label:'用户手动更正'};report.sources.push(source);}return [{sourceId:source.id,time:'',detail:String(detail).slice(0,300)}];}
+function edit(report,{roomIndex,kind,index,key,value}){
+ const next=clone(report),room=next.rooms[roomIndex];if(!room)throw new Error('空间草稿不存在');
+ const list={place:room.places,clue:room.observedItems,relation:room.relations};const row=kind==='room'?room:list[kind]?.[index];if(!row)throw new Error('这一条草稿不存在');
+ const allowed={room:['name','summary','capturedAt'],place:['name','description','parentRef'],clue:['name','description','quantity','placeRef'],relation:['fromRef','toRef','relation','referenceFrame']};if(!allowed[kind]?.includes(key))throw new Error('不支持修改这一项');
+ if(['parentRef','placeRef','fromRef','toRef'].includes(key)&&value!==null&&!room.places.some(p=>p.ref===value))throw new Error('请选择有效的位置');
+ if(key==='quantity'){if(value===''||value==null)value=null;else{value=Number(value);if(!Number.isInteger(value)||value<1||value>999)throw new Error('数量请输入1～999，未知可留空');}}
+ if(key==='capturedAt')value=value||null;
+ row[key]=value;
+ if(kind==='relation'&&key==='relation'&&['left_of','right_of','opposite'].includes(value)&&row.referenceFrame==='用户确认的空间关系')row.referenceFrame='';
+ if(kind!=='room')row.evidence=evidence(next,'用户更正：'+(row.name||kind)+'，'+key+'='+String(value??'位置待确认'));
+ if(kind==='place'&&key==='parentRef'){let node=row;const seen=new Set();while(node){if(seen.has(node.ref))throw new Error('位置不能放在自己的下级里面');seen.add(node.ref);node=room.places.find(p=>p.ref===node.parentRef);}}
+ return next;
+}
+function add(report,roomIndex,kind){const next=clone(report),room=next.rooms[roomIndex];if(!room)throw new Error('空间草稿不存在');if(kind==='place'){if(room.places.length>=60)throw new Error('这一批位置已满');let i=1;while(room.places.some(x=>x.ref==='user_'+i))i++;room.places.push({ref:'user_'+i,name:'新位置',parentRef:null,description:'',visibility:'uncertain',evidence:evidence(next,'用户新增位置，具体名称待填写')});}else if(kind==='clue'){if(room.observedItems.length>=100)throw new Error('物品线索已满');room.observedItems.push({name:'新物品线索',category:'其他',quantity:null,placeRef:null,description:'',evidence:evidence(next,'用户补充物品线索，尚未登记库存')});}else if(kind==='relation'){if(room.places.length<2)throw new Error('先添加至少两个位置');if(room.relations.length>=100)throw new Error('关系已满');room.relations.push({fromRef:room.places[0].ref,toRef:room.places[1].ref,relation:'near',referenceFrame:'用户确认的空间关系',evidence:evidence(next,'用户补充位置关系，请核对')});}return next;}
+function remove(report,roomIndex,kind,index){const next=clone(report),room=next.rooms[roomIndex];if(!room)throw new Error('空间草稿不存在');if(kind==='place'){const removed=room.places[index];if(!removed)throw new Error('位置不存在');room.places.splice(index,1);room.places.forEach(p=>{if(p.parentRef===removed.ref){p.parentRef=removed.parentRef;p.evidence=evidence(next,'用户删除上级位置后调整层级');}});room.observedItems.forEach(x=>{if(x.placeRef===removed.ref){x.placeRef=null;x.evidence=evidence(next,'所属位置已从草稿移除，请补充位置');}});room.relations=room.relations.filter(x=>x.fromRef!==removed.ref&&x.toRef!==removed.ref);}else if(kind==='clue')room.observedItems.splice(index,1);else if(kind==='relation')room.relations.splice(index,1);return next;}
+function changes(before,after){const old=before.rooms.flatMap(r=>r.places),current=after.rooms.flatMap(r=>r.places);return {before:old.length,after:current.length,added:current.filter(x=>!old.some(o=>o.ref===x.ref)).map(x=>x.name),removed:old.filter(x=>!current.some(o=>o.ref===x.ref)).map(x=>x.name)};}
+return {view,edit,add,remove,relations,changes};
+
+});
