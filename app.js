@@ -9,7 +9,7 @@ import { safetyBlock, textMentionsLimits, preservePainContext } from './safety.j
 import { abilityEntry, abilityBlock, allowedUses, buildAbilityIntakeInput, validateAbilityIntake, abilityRecords, redFlagCheck } from './abilities.js';
 import { captureEntry, captureHasEvidence, splitSharedText, buildKnowledgeImportInput, validateKnowledgeImport, applyKnowledgeCard, saveManualVideoSummary, deleteKnowledge, capturePlatforms, CONTENT_TYPES, PLAN_POINT_KINDS } from './knowledge.js';
 import { allowedIngestBase,ingestConfig,ingestConfigFor,ingestRoutes,anyIngestConfigured,nextIngestSettings,INGEST_ROUTES,supportedAutoCapture,preferVideoIngest,submitIngest,readIngestJob,applyIngestResult,readActionFrame,readImageEvidence } from './ingest.js';
-import { saveImage,readImage } from './media-store.js';
+import { saveImage,readImage,setMediaScope } from './media-store.js';
 import { exerciseLogForm,sessionEditForm,assessmentForm,abilityIntakeForm,abilityConfirmForm,methodConfirmForm,digestConfirmForm,activityFields,activityIntakeForm,selfCheckTaskForm,selfCheckSummaryForm,activityName } from './experience.js';
 import { SELF_CHECK_TASKS, selfCheckRecords } from './self-check.js';
 import { syncPersonalActivities,createPersonalActivity,updatePersonalActivity,setActivityPlanning,archivePersonalActivity,deletePersonalActivity,addToDraft,buildActivityIntakeInput,validateActivityIntake,PLANNING_USES } from './personal-activities.js';
@@ -49,13 +49,21 @@ import {durationAt} from './training-duration.js';
 import {logConfirmationHTML} from './training-log-view.js';
 import {buildScenePoolInput,validateScenePool,mergePoolSuggestions,applyScenePoolSelection} from './scene-pool.js';
 import {scenePoolInputHTML,scenePoolResultsHTML} from './scene-pool-view.js';
+import {ACTIVE_ACCOUNT_KEY,readActiveAccount,scopeStoreKey,scopeMediaKey,sameAccount} from './account-scope.js';
+import {accountEntryHTML} from './account-view.js';
+import {hydrateSourceMediaRefs} from './source-media-cache.js';
+import {createBrowserSync} from './sync-browser.js';
+import {syncStatusText} from './sync-view.js';
 const $=s=>document.querySelector(s);
 const activityById=id=>activities.find(a=>a.id===id);
 let storageError=false,state,lastStored=null;let importDraft=null;
+let accountScope=null,accountLocked=false,activeStoreKey=STORE_KEY;
+let cloudSync=null,cloudSyncStatus=null,cloudSyncTimer=null,cloudSyncDebounce=null;
 let offlineStatus=window.isSecureContext?'正在准备离线文件…':'当前 HTTP 地址不支持离线启动。';
 function showOfflineStatus(message){offlineStatus=message;document.querySelectorAll('[data-offline-status]').forEach(el=>{el.textContent=message;});}
 try {
-  const raw=localStorage.getItem(STORE_KEY);lastStored=raw;state=raw?normalizeStore(JSON.parse(raw)):initialState();
+  accountScope=readActiveAccount(localStorage);activeStoreKey=scopeStoreKey(accountScope);setMediaScope(scopeMediaKey(accountScope));
+  const raw=localStorage.getItem(activeStoreKey);lastStored=raw;state=raw?normalizeStore(JSON.parse(raw)):initialState();
   if(state.schemaVersion!==SCHEMA_VERSION||!Array.isArray(state.sessions)||!state.profile||!Array.isArray(state.notes)||!Array.isArray(state.knowledge)||!Array.isArray(state.captures)||!Array.isArray(state.observations))throw new Error('记录格式不兼容');
 }catch{state=initialState();storageError=true;}
 syncPersonalActivities(state);
@@ -70,22 +78,38 @@ const aiState={ready:false,busy:false,mode:null,text:'',model:null,provider:'',c
 const ingestPolling=new Set(),ingestStarting=new Set();
 let pendingSceneProposal=null,pendingActionDiscovery=null,pendingScenePool=null;
 aiState.text=state.aiPending?.text||'';
-function toast(text){$('#toast').textContent=text;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4500);}
+function toast(text){if(accountLocked)return;$('#toast').textContent=text;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4500);}
+function currentAccountMatches(){try{return sameAccount(readActiveAccount(localStorage),accountScope);}catch{return false;}}
+function lockAccountPage(){
+  cloudSync?.stop();clearInterval(cloudSyncTimer);clearTimeout(cloudSyncDebounce);
+  accountLocked=true;for(const d of document.querySelectorAll('dialog[open]'))d.close();
+  for(const url of mediaUrls.values())URL.revokeObjectURL(url);mediaUrls.clear();mediaBlobs.clear();
+  $('#app').textContent='账号已在其他页面改变，正在载入对应资料…';$('#toast').classList.remove('visible');
+  for(const id of ['timer','rest']){const e=$('#'+id);if(e){e.hidden=true;e.textContent='';}}
+  location.reload();
+}
+window.addEventListener('storage',event=>{if((event.key===ACTIVE_ACCOUNT_KEY||event.key===null)&&!currentAccountMatches())lockAccountPage();});
+window.addEventListener('pageshow',event=>{if(event.persisted)location.reload();});
 function commit(change){
+  if(accountLocked||!currentAccountMatches()){if(!accountLocked)lockAccountPage();return false;}
   if(storageError){toast('本地数据暂时无法读取。已暂停保存，不覆盖原有记录。');return false;}
   const next=structuredClone(state);change(next);
-  try{if(localStorage.getItem(STORE_KEY)!==lastStored){toast('另一页面更新了记录，请刷新后重试，避免覆盖。');return false;}const serialized=JSON.stringify(studioDataForStorage(next));localStorage.setItem(STORE_KEY,serialized);lastStored=serialized;state=next;syncPersonalActivities(state);return true;}
+  try{if(localStorage.getItem(activeStoreKey)!==lastStored){toast('另一页面更新了记录。未保存输入还在，请先复制后刷新，避免覆盖。');return false;}const serialized=JSON.stringify(studioDataForStorage(next));localStorage.setItem(activeStoreKey,serialized);lastStored=serialized;state=next;syncPersonalActivities(state);window.dispatchEvent(new Event('xundong:local-write'));return true;}
   catch{toast('保存失败：浏览器空间不足或存储不可用。请导出备份。');return false;}
 }
 function render(){
+  if(accountLocked)return;
+  if(!storageError&&!currentAccountMatches()){lockAccountPage();return;}
   if(!state.draft)request={...request,timeMode:'training',minutes:Math.max(10,Math.min(120,Number(request.minutes)||20))};
-  const content={today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeDetailId?knowledgeDetailHTML(state,knowledgeDetailId):knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind,knowledgeContentType),body:()=>bodyHTML(state)}[page]();
+  const content={today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeDetailId?knowledgeDetailHTML(state,knowledgeDetailId):knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind,knowledgeContentType),body:()=>accountEntryHTML(accountScope)+bodyHTML(state)}[page]();
   $('#app').innerHTML=shell(page,state,content,storageError);
+  if(accountScope&&$('.account-entry>div'))$('.account-entry>div').insertAdjacentHTML('beforeend',`<small class="account-sync-note" data-app-sync-status>${esc(syncStatusText(cloudSyncStatus))}</small>`);
   if(page==='knowledge'&&!knowledgeDetailId)enhanceKnowledgeFilters();
   showOfflineStatus(offlineStatus);
   hydrateImages($('#app'));
-  for(const form of document.querySelectorAll('#app [data-set-form]'))form.dataset.initial=JSON.stringify([...new FormData(form)]);
+  for(const form of document.querySelectorAll('#app form'))form.dataset.initial=JSON.stringify([...new FormData(form)]);
   paintDwell();
+  window.dispatchEvent(new Event('xundong:ui-ready'));
 }
 function paintDwell(){
   const draft=state.draft,item=draft?.items?.[draft.cursor??0];
@@ -98,6 +122,23 @@ function canLeaveAction(){
   const forms=[...document.querySelectorAll('#app [data-set-form]')];
   if(forms.some(form=>form.dataset.initial!==JSON.stringify([...new FormData(form)]))){toast('本组输入还没有保存。请先保存本组，或点“撤销本组输入”。');return false;}
   return true;
+}
+function canApplyCloud(){
+  if(accountLocked||storageError||aiState.busy||state.draft?.startedAt||timer||document.querySelector('dialog[open]'))return false;
+  return ![...document.querySelectorAll('#app form')].some(f=>f.dataset.initial!==JSON.stringify([...new FormData(f)]));
+}
+function receiveCloudState(){
+  if(!canApplyCloud()||!currentAccountMatches())return;
+  try{const raw=localStorage.getItem(activeStoreKey);if(raw===lastStored)return;const next=raw?normalizeStore(JSON.parse(raw)):initialState();state=next;lastStored=raw;syncPersonalActivities(state);render();}catch{toast('云端更新尚未应用，本机资料保留。');}
+}
+function startAccountSync(){
+  if(!accountScope||storageError)return;
+  try{cloudSync=createBrowserSync({canApply:canApplyCloud,onApplied:receiveCloudState,onStatus:s=>{cloudSyncStatus=s;for(const node of document.querySelectorAll('[data-app-sync-status]'))node.textContent=syncStatusText(s);}});
+    const wake=()=>{clearTimeout(cloudSyncDebounce);cloudSyncDebounce=setTimeout(()=>{if(!document.hidden)cloudSync?.tick();},1500);};
+    window.addEventListener('xundong:local-write',wake);window.addEventListener('online',wake);document.addEventListener('visibilitychange',()=>{if(!document.hidden){receiveCloudState();wake();}});
+    window.addEventListener('storage',e=>{if(e.key===activeStoreKey)receiveCloudState();});
+    cloudSyncTimer=setInterval(()=>{if(!document.hidden)cloudSync?.tick();},15000);cloudSync.tick();
+  }catch(e){cloudSyncStatus={mode:'error',error:e.message};}
 }
 function enhanceKnowledgeFilters(){
   const status=$('#app [data-knowledge-filter="all"]')?.closest('.filter-pills');if(!status)return;
@@ -112,8 +153,8 @@ function openKnowledge(id){knowledgeListScroll=window.scrollY;page='knowledge';k
 function backToKnowledge(){knowledgeDetailId=null;page='knowledge';location.hash='knowledge';render();window.scrollTo({top:knowledgeListScroll});}
 window.addEventListener('hashchange',()=>{const next=locationRoute();if(page!==next.page||knowledgeDetailId!==next.knowledgeId){const returning=Boolean(knowledgeDetailId)&&next.page==='knowledge'&&!next.knowledgeId;if($('#sheet').open)$('#sheet').close();page=next.page;knowledgeDetailId=next.knowledgeId;render();window.scrollTo({top:returning?knowledgeListScroll:0});}});
 function enableMediaZoom(root){for(const img of root.querySelectorAll('.source-tile img,.activity-review-intro img,.activity-media img')){if(img.closest('button'))continue;const button=document.createElement('button');button.type='button';button.className='media-zoom';button.dataset.mediaZoom='';button.setAttribute('aria-label','放大查看配图');img.replaceWith(button);button.append(img);button.insertAdjacentHTML('beforeend','<span class="zoom-hint">点图放大</span>');}}
-function hydrateImages(root=document){enableMediaZoom(root);for(const image of root.querySelectorAll('img[data-local-image]')){const key=image.dataset.localImage;if(mediaUrls.has(`local:${key}`)){image.src=mediaUrls.get(`local:${key}`);continue;}readImage(key).then(blob=>{if(!blob||!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(`local:${key}`,url);image.src=url;}).catch(()=>{});}for(const image of root.querySelectorAll('img[data-frame-capture]')){if(image.dataset.loading==='true'||image.hasAttribute('src'))continue;const capture=state.captures.find(x=>x.id===image.dataset.frameCapture),segment=capture?.actionSegments?.find(x=>x.id===image.dataset.frameSegment)||capture?.videoEvidence?.find(x=>x.id===image.dataset.frameSegment);if(!capture||!segment?.thumbnail)continue;const key=`frame:${segment.thumbnail.jobId}:${segment.thumbnail.index}`;if(mediaUrls.has(key)){image.src=mediaUrls.get(key);continue;}image.dataset.loading='true';readActionFrame(capture,segment,state).then(blob=>{rememberMediaBlob(key,blob);if(!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(key,url);image.src=url;}).catch(()=>{image.alt='动作截图暂不可用，请重新解析视频';}).finally(()=>{image.dataset.loading='false';});}for(const image of root.querySelectorAll('img[data-capture-image]')){if(image.dataset.loading==='true'||image.hasAttribute('src'))continue;const staticDetails=image.closest('.douyin-image-evidence'),liveDetails=image.closest('.live-photo-videos');if(staticDetails&&!staticDetails.open||liveDetails&&!liveDetails.open)continue;const capture=state.captures.find(x=>x.id===image.dataset.captureImage),index=Number(image.dataset.imageIndex),item=capture?.imageEvidence?.find(x=>x.imageIndex===index),live=capture?.liveVideoEvidence?.find(x=>x.imageIndex===index),thumbnail=item?.thumbnail||live?.coverThumbnail;if(!capture||!thumbnail)continue;const mediaItem={thumbnail,imageIndex:index};const key=`postimage:${thumbnail.jobId}:${thumbnail.index}`;if(mediaUrls.has(key)){image.src=mediaUrls.get(key);continue;}image.dataset.loading='true';readImageEvidence(capture,mediaItem,state).then(blob=>{rememberMediaBlob(key,blob);if(!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(key,url);image.src=url;}).catch(()=>{image.alt='图文预览已过期，请打开原图文核对';}).finally(()=>{image.dataset.loading='false';});}}
-function showModal(title,html){const d=$('#sheet');d.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" data-action="close" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${html}</div>`;if(!d.open)d.showModal();hydrateImages(d);}
+function hydrateImages(root=document){enableMediaZoom(root);for(const image of root.querySelectorAll('img[data-local-image]')){const key=image.dataset.localImage;if(mediaUrls.has(`local:${key}`)){image.src=mediaUrls.get(`local:${key}`);continue;}readImage(key).then(blob=>{if(!image.isConnected)return;if(!blob){image.alt='配图尚未下载，请在账号页恢复配图';return;}const url=URL.createObjectURL(blob);mediaUrls.set(`local:${key}`,url);image.src=url;}).catch(()=>{});}for(const image of root.querySelectorAll('img[data-frame-capture]')){if(image.dataset.localImage||image.dataset.loading==='true'||image.hasAttribute('src'))continue;const capture=state.captures.find(x=>x.id===image.dataset.frameCapture),segment=capture?.actionSegments?.find(x=>x.id===image.dataset.frameSegment)||capture?.videoEvidence?.find(x=>x.id===image.dataset.frameSegment);if(!capture||!segment?.thumbnail)continue;const key=`frame:${segment.thumbnail.jobId}:${segment.thumbnail.index}`;if(mediaUrls.has(key)){image.src=mediaUrls.get(key);continue;}image.dataset.loading='true';readActionFrame(capture,segment,state).then(blob=>{rememberMediaBlob(key,blob);if(!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(key,url);image.src=url;}).catch(()=>{image.alt='动作截图暂不可用，请重新解析视频';}).finally(()=>{image.dataset.loading='false';});}for(const image of root.querySelectorAll('img[data-capture-image]')){if(image.dataset.localImage||image.dataset.loading==='true'||image.hasAttribute('src'))continue;const staticDetails=image.closest('.douyin-image-evidence'),liveDetails=image.closest('.live-photo-videos');if(staticDetails&&!staticDetails.open||liveDetails&&!liveDetails.open)continue;const capture=state.captures.find(x=>x.id===image.dataset.captureImage),index=Number(image.dataset.imageIndex),item=capture?.imageEvidence?.find(x=>x.imageIndex===index),live=capture?.liveVideoEvidence?.find(x=>x.imageIndex===index),thumbnail=item?.thumbnail||live?.coverThumbnail;if(!capture||!thumbnail)continue;const mediaItem={thumbnail,imageIndex:index};const key=`postimage:${thumbnail.jobId}:${thumbnail.index}`;if(mediaUrls.has(key)){image.src=mediaUrls.get(key);continue;}image.dataset.loading='true';readImageEvidence(capture,mediaItem,state).then(blob=>{rememberMediaBlob(key,blob);if(!image.isConnected)return;const url=URL.createObjectURL(blob);mediaUrls.set(key,url);image.src=url;}).catch(()=>{image.alt='图文预览已过期，请打开原图文核对';}).finally(()=>{image.dataset.loading='false';});}}
+function showModal(title,html){if(accountLocked)return;const d=$('#sheet');d.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" data-action="close" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${html}</div>`;if(!d.open)d.showModal();hydrateImages(d);}
 // ---------- 我的动作 ----------
 // 个人动作的详情区：来源、是否允许自动安排、编辑 / 归档 / 删除。任何动作都可以手动加进还没开始的安排。
 function personalSectionHTML(a){
@@ -198,6 +239,7 @@ function detail(id){
 // ---------- AI ----------
 // The server only adds the prompt and key; context and validation stay here, next to the local data.
 async function askAI(skill,input,validate,{repair=true}={}){
+  if(accountLocked||!currentAccountMatches())throw Error('账号已改变，请重新载入后操作。');
   if(!ensureAI())throw new Error('请先启用 AI 并确认数据发送范围。');
   if(navigator.onLine===false)throw new AINetworkError('当前没有网络。');
   const cfg=directConfig(state),model=organizeModel(state,skill);
@@ -205,8 +247,8 @@ async function askAI(skill,input,validate,{repair=true}={}){
   const call=cfg
     ?async repair=>(await callDirect(skill,directMessages(skill,input,repair),model?{...cfg,model}:cfg,{timeoutMs:model?180000:90000})).reply
     :async repair=>{let res;try{res=await fetch(`/api/ai/${skill}`,{method:'POST',headers:{'Content-Type':'application/json','X-Xundong-Consent':aiState.consentId},body:JSON.stringify({input,repair,model})});}catch{throw new AINetworkError();}const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||`AI 服务出错（${res.status}）`);return data.reply;};
-  let reply=await call(),result=validate(reply);
-  if(!result.ok&&repair){reply=await call({reply,errors:result.errors});result=validate(reply);}
+  let reply=await call();if(accountLocked||!currentAccountMatches())throw Error('账号已改变，旧结果没有保存。');let result=validate(reply);
+  if(!result.ok&&repair){reply=await call({reply,errors:result.errors});if(accountLocked||!currentAccountMatches())throw Error('账号已改变，旧结果没有保存。');result=validate(reply);}
   if(!result.ok)throw new Error(`AI 的结果没有通过校验：${result.errors.slice(0,2).join('；')}。可以换个说法重试，或用规则安排。`);
   return result;
 }
@@ -499,11 +541,13 @@ let timer=state.draft?.activeTimer?{...state.draft.activeTimer,phase:'paused',el
 const TIMER_READY=3;
 function persistTimer(){return commit(s=>{if(s.draft)s.draft.activeTimer=timer?structuredClone(timer):null;});}
 function pauseTimer(){
+  if(accountLocked)return;
   if(!timer||timer.phase==='paused')return;
   timer=pauseActiveTimer(timer);persistTimer();paintTimer();
 }
 function buzz(pattern,muted=timer?.muted){if(muted)return;try{navigator.vibrate?.(pattern);}catch{}}
 function paintTimer(){
+  if(accountLocked)return;
   const box=$('#timer');if(!box)return;
   if(!timer){box.hidden=true;box.innerHTML='';return;}
   box.hidden=false;
@@ -622,7 +666,7 @@ document.addEventListener('click',event=>{
   if(!resource||new URL(link.href).href!==new URL(resource.url).href){event.preventDefault();refreshFollowAlong();toast('当前状态或训练条件已变化，暂不打开这条跟练推荐；可在知识库查看原收藏。');}
 },true);
 document.addEventListener('click',e=>{
-  const el=e.target.closest('button');if(!el)return;
+  const el=e.target.closest('button');if(!el||accountLocked)return;
   if(el.hasAttribute('data-media-zoom')){const image=el.querySelector('img');if(!image?.src?.startsWith('blob:')||!image.naturalWidth){toast('图片尚未加载或已过期，请打开来源核对。');return;}let viewer=$('#image-viewer');if(!viewer){viewer=document.createElement('dialog');viewer.id='image-viewer';viewer.className='image-viewer';viewer.innerHTML='<button type="button" class="secondary" data-close-image-viewer>关闭大图</button><img alt="来源配图放大查看">';document.body.append(viewer);}viewer.querySelector('img').src=image.src;viewer.querySelector('img').alt=image.alt;viewer.showModal();return;}
   if(el.hasAttribute('data-close-image-viewer')){$('#image-viewer')?.close();return;}
   if(el.dataset.sourceEdit){const c=state.captures.find(x=>x.id===el.dataset.sourceEdit),type=el.dataset.sourceType,d=type==='image'?{kind:'image_post',imageIndex:Number(el.dataset.imageIndex)}:{id:el.dataset.sourceId,omni:type==='omni'},saved=sourceExtractionState(state,c,d);if(!saved.complete){toast('来源已变化，请重新核对。');return;}showModal('已保存的动作',`<p class="helper left">个人动作可以编辑；公共动作只修改你的个人心得、用途和配图，不改公共动作库。</p>${saved.activities.map(a=>`<div class="saved-source-action"><strong>${esc(a.name)}</strong><button class="secondary" data-detail="${esc(a.id)}">查看动作</button>${a.id.startsWith('my-')?`<button class="secondary" data-edit-activity="${esc(a.id)}">编辑我的动作</button>`:''}</div>`).join('')}`);return;}
@@ -735,6 +779,12 @@ document.addEventListener('click',e=>{
   if(el.dataset.complete||el.dataset.skip){if(state.draft?.pausedForDiscomfort){toast('已出现不舒服，请先结束并保存本次记录。');return;}if(!canLeaveAction())return;const id=el.dataset.complete||el.dataset.skip,item=state.draft?.items.find(i=>i.id===id);if(!item)return;if(el.dataset.skip&&item.actualSetDetails?.length){toast('这个动作已记录实际组次，请用“下一个”继续，不会把已记录的组次改成跳过。');return;}if(commit(s=>{const idx=s.draft.items.findIndex(i=>i.id===id);const i=s.draft.items[idx];const nowSkipping=el.dataset.skip&&i.status!=='skipped';i.status=el.dataset.complete?(i.status==='completed'?'pending':'completed'):(i.status==='skipped'?'pending':'skipped');if(nowSkipping&&idx===(s.draft.cursor??0))s.draft.cursor=nextCursor(s.draft,idx);}))render();return;}
   if(el.dataset.replace){const a=replaceItem(state.draft,el.dataset.replace,state.profile);if(!a){toast('没有满足同一目标和器械条件的替代。');return;}if(commit(s=>applyReplacement(s.draft,el.dataset.replace,a))){render();toast('已替换；旧重量、组次和理由已清除。');}return;}
   switch(el.dataset.action){
+    case 'account':{
+      if(!canLeaveAction())break;
+      if(aiState.busy||ingestStarting.size){toast('请先等当前整理或提交结束，再管理账号。');break;}
+      if([...document.querySelectorAll('#app form')].some(f=>f.dataset.initial!==JSON.stringify([...new FormData(f)]))){toast('页面输入还未保存，请先保存或刷新确认后再管理账号。');break;}
+      location.href='/account.html';break;
+    }
     case 'export-media':{if(storageError){toast('当前记录读取异常，请先使用纯文字救援备份。');break;}el.disabled=true;buildMediaBackup(state).then(({text,imageCount,missing})=>{const url=URL.createObjectURL(new Blob([text],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=`循动含图备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast(`已导出 ${imageCount} 张本机图片${missing.length?`；另有 ${missing.length} 张本机已缺失，无法补入`:''}。`);}).catch(e=>toast(e.message)).finally(()=>el.disabled=false);break;}
     case 'free-start':if(state.draft){toast('请先保存或撤下当前训练。');break;}if(commit(s=>s.draft=createStudio({...request,place:request.place||'home'},s.profile,s.assessments)))render();break;
     case 'studio-custom':if(!canLeaveAction())break;showModal('手写训练项',`<form id="studio-custom-form"><label>动作名称<input name="name" required maxlength="80"></label><p class="helper left">仅添加到本次训练，不假装已经识别或加入动作库。</p><button class="primary full" type="submit">添加到本次</button></form>`);break;
@@ -791,7 +841,7 @@ document.addEventListener('click',e=>{
       break;
     }
     case 'observation':observationDialog();break;
-    case 'export':{let data;try{data=storageError?rawBackupText(localStorage.getItem(STORE_KEY)):JSON.stringify(sanitizeForExport(state),null,2);}catch{toast('本地数据无法解析，不能生成安全的备份。请保留此页面，先不要清除浏览器数据。');break;}try{const url=URL.createObjectURL(new Blob([data||''],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`循动备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast('已导出当前浏览器的记录。');}catch{toast('当前浏览器无法读取存储，请保留此页面。');}break;}
+    case 'export':{let data;try{data=storageError?rawBackupText(localStorage.getItem(activeStoreKey)):JSON.stringify(sanitizeForExport(state),null,2);}catch{toast('本地数据无法解析，不能生成安全的备份。请保留此页面，先不要清除浏览器数据。');break;}try{const url=URL.createObjectURL(new Blob([data||''],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`循动备份-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);toast('已导出当前浏览器的记录。');}catch{toast('当前浏览器无法读取存储，请保留此页面。');}break;}
   }
 });
 document.addEventListener('change',e=>{if(e.target.matches('[data-reference-mode]')){const mode=['auto','selected','none'].includes(e.target.value)?e.target.value:'auto';if(commit(s=>{s.settings.planningReferences={mode,selectedIds:s.settings.planningReferences?.selectedIds||[]};s.settings.useCorpus=mode!=='none';})){render();toast(mode==='auto'?'会按今天情况自动挑选资料。':mode==='selected'?'本次只参考你勾选的资料。':'这次安排不参考知识库。');}return;}if(e.target.matches('[data-reference-id]')){const id=e.target.dataset.referenceId,on=e.target.checked;if(commit(s=>{const p=s.settings.planningReferences||{mode:'auto',selectedIds:[]},ids=new Set(p.selectedIds||[]);on?ids.add(id):ids.delete(id);s.settings.planningReferences={...p,mode:'selected',selectedIds:[...ids]};s.settings.useCorpus=true;})){render();}else render();return;}if(e.target.id==='method-card'||e.target.id==='method-mode'){const id=$('#method-card')?.value||null,mode=$('#method-mode')?.value||'inspiration';if(commit(s=>s.settings.methodPreference=id?{creatorProfileId:id,mode}:null)){render();toast(id?`下次 AI 安排会按「${state.creatorProfiles.find(p=>p.id===id)?.title}」· ${METHOD_MODES[mode].label}。`:'不按创作者方法安排。');}return;}if(e.target.dataset.activityPlanning){const id=e.target.dataset.activityPlanning,use=e.target.value;try{if(commit(s=>setActivityPlanning(s,id,use))){render();detail(id);toast(use==='allowed'?'之后的安排可以自动选到它了。':'改为仅手动使用。');}}catch(error){e.target.value=state.personalActivities.find(p=>p.id===id)?.planningUse||'manual_only';toast(error.message);}return;}if(e.target.dataset.topicPlanning){const id=e.target.dataset.topicPlanning,on=e.target.checked;if(commit(s=>setTopicPlanning(s,id,on))){render();toast(on?'这张主题总结会参与安排。':'这张主题总结不再参与安排。');}else render();return;}if(e.target.id==='use-corpus'){const on=e.target.checked;if(commit(s=>{s.settings.useCorpus=on;s.settings.planningReferences={mode:on?'auto':'none',selectedIds:s.settings.planningReferences?.selectedIds||[]};}))toast(on?'安排时会参考你的知识库。':'这之后的安排不参考知识库。');return;}if(e.target.matches('[data-ai-organize-model]')){const m=ORGANIZE_MODELS.includes(e.target.value)?e.target.value:null;if(commit(s=>s.settings.aiOrganizeModel=m))toast(m?`整理类任务将使用 ${m}。`:'整理类任务改回和安排用同一个模型。');return;}if(e.target.dataset.methodPlanning){const id=e.target.dataset.methodPlanning,allowed=e.target.checked;if(commit(s=>setMethodPlanning(s,id,allowed))){render();toast(allowed?'已允许这张方法卡参与安排。':'已取消用于安排。');}else render();return;}if(e.target.dataset.abilityUse){const id=e.target.dataset.abilityUse,use=e.target.value,a=state.assessments.find(a=>a.id===id);if(a&&allowedUses(a).includes(use)&&commit(s=>s.assessments.find(a=>a.id===id).recommendationUse=use)){render();toast(use==='gentle_preference'?'已设为温和参考，会参与之后的安排。':'已更新用途。');}else render();return;}if(e.target.id==='focus'){request.focus=e.target.value;if(request.focus!=='strength')request.targetRegions=[];render();$('#focus')?.focus();}if(e.target.id==='readiness'){request.readiness=e.target.value;refreshFollowAlong();}if(e.target.id==='library-place'){filters.place=e.target.value;render();}});
@@ -1066,14 +1116,15 @@ document.addEventListener('submit',async e=>{
     if(ok){$('#sheet').close();render();toast('已保存。');}
   }catch(error){toast(error.message||'暂时无法保存，请检查填写内容。');}
 });
-setInterval(()=>{if($('#elapsed')&&state.draft?.startedAt)$('#elapsed').textContent=elapsedText(state.draft.startedAt).replace(' 已经过','');paintDwell();if(rest){if(Date.now()>=rest.endsAt){rest=null;paintRest();}else{const t=$('#rest .rest-time');if(t)t.textContent=fmtSec(restRemain());}}
+setInterval(()=>{if(accountLocked)return;if($('#elapsed')&&state.draft?.startedAt)$('#elapsed').textContent=elapsedText(state.draft.startedAt).replace(' 已经过','');paintDwell();if(rest){if(Date.now()>=rest.endsAt){rest=null;paintRest();}else{const t=$('#rest .rest-time');if(t)t.textContent=fmtSec(restRemain());}}
   if(timer){if(document.hidden){pauseTimer();return;}if(timer.phase==='ready'){if(Date.now()>=timer.readyEndsAt)timerToWork();else paintTimer();}else if(timer.phase==='paused')paintTimer();else if(timer.workEndsAt&&Date.now()>=timer.workEndsAt)stopTimer(true);else paintTimer();}},1000);
-setInterval(()=>{if(anyIngestConfigured(state))for(const c of state.captures||[])if(c.ingestStatus==='queued')pollIngest(c.id);},5000);
+setInterval(()=>{if(!accountLocked&&anyIngestConfigured(state))for(const c of state.captures||[])if(c.ingestStatus==='queued')pollIngest(c.id);},5000);
 render();
 paintTimer();
 document.addEventListener('visibilitychange',()=>{paintDwell();if(document.hidden)pauseTimer();});
-window.addEventListener('pagehide',()=>{dwellClock=updateViewDwell(dwellClock,dwellClock?.key,false);pauseTimer();});
+window.addEventListener('pagehide',()=>{cloudSync?.stop();clearInterval(cloudSyncTimer);clearTimeout(cloudSyncDebounce);dwellClock=updateViewDwell(dwellClock,dwellClock?.key,false);pauseTimer();});
 probeAI();
+startAccountSync();
 if('serviceWorker' in navigator && window.isSecureContext && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('/sw.js').then(()=>Promise.race([navigator.serviceWorker.ready,new Promise(resolve=>setTimeout(()=>resolve(null),12000))])).then(reg=>new Promise(resolve=>{
     const channel=new MessageChannel(),timeout=setTimeout(()=>resolve(false),5000);

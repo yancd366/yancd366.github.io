@@ -61,6 +61,10 @@ export function normalizeStore(data){
   for(const k of s.knowledge){if(typeof k.title!=='string'||typeof k.text!=='string'||!Array.isArray(k.activityIds)||k.activityIds.some(x=>!known.has(x)))throw new Error('知识条目格式无效。');if(k.contentType!=null&&typeof k.contentType!=='string')throw new Error('知识内容分类无效。');if(k.planPoints!=null){array(k.planPoints,'训练方案要点');for(const p of k.planPoints)if(typeof p?.kind!=='string'||typeof p?.text!=='string'||typeof p?.evidenceQuote!=='string')throw new Error('训练方案要点格式无效。');}k.contentType ||= null;k.planPoints ||= [];}
   for(const k of s.knowledge)if(k.followAlong!=null)validateFollowAlong(k.followAlong);
   for(const c of s.captures||[]){
+    if(c.sourceMedia!=null){
+      if(!Array.isArray(c.sourceMedia)||c.sourceMedia.length>36)throw Error('来源配图缓存格式无效。');const seen=new Set();
+      for(const m of c.sourceMedia){const key=m.kind==='image_post'?`image:${m.imageIndex}`:`frame:${m.segmentId}`;if(!['image_post','video_frame'].includes(m.kind)||!/^source-[a-f0-9]{64}$/.test(m.thumbnailId)||!/^[a-f0-9-]{36}$/i.test(m.sourceJobId)||!Number.isInteger(m.sourceIndex)||m.sourceIndex<0||m.sourceIndex>11||m.kind==='image_post'&&(!Number.isInteger(m.imageIndex)||m.imageIndex<0||m.imageIndex>11)||m.kind==='video_frame'&&(!id(m.segmentId))||seen.has(key))throw Error('来源配图缓存引用无效。');seen.add(key);}
+    }
     if(typeof c.knowledgeId!=='string'||typeof c.shareText!=='string'||typeof c.rawUrl!=='string'||typeof c.status!=='string')throw new Error('分享收件箱格式无效。');
     if(c.manualSummary!=null&&(typeof c.manualSummary!=='string'||c.manualSummary.length>2000))throw new Error('个人视频总结格式无效。');
     if(c.manualContentType!=null&&typeof c.manualContentType!=='string')throw new Error('个人视频总结分类无效。');
