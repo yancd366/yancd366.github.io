@@ -1,0 +1,88 @@
+/* Shared browser layouts. Native WeChat templates keep their own styles. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.phone .web-home .home-title { margin: 12px 0 16px; line-height: 1.35; }
+.phone .web-home .remember-box { padding: 16px; }
+.phone .web-home .remember-input { height: 96px; min-height: 96px; margin: 12px 0; border-radius: 12px; }
+.phone .web-home .remember-input { resize: vertical; }
+.phone .web-home .remember-primary,
+.phone .web-home .quick-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.phone .web-home .quick-links { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.phone .web-home .remember-primary > .btn,
+.phone .web-home .quick-links > .btn { width: 100%; min-width: 0; margin: 0; padding: 10px 6px; }
+.phone .home-shortcuts,
+.phone .collection-shortcuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.phone .home-shortcuts { margin-top: 16px; }
+.phone .home-shortcuts > .btn { width: 100%; min-width: 0; min-height: 48px; padding: 10px 8px; font-size: 13px; }
+.phone .web-home .find-box { margin-top: 16px; padding: 14px; }
+.phone .web-home .find-box > .row.section { margin-top: 12px; }
+.phone .web-home .find-box .find-voice { flex: 0 0 72px; padding: 10px 4px; }
+.phone .web-home .find-box .search input { width: 100%; min-width: 0; }
+
+/* Collection cards must not inherit the zero-padding .item button reset. */
+.phone .web-collections .collection-shortcuts > .btn { width: 100%; min-width: 0; padding: 11px 8px; }
+.phone .web-collections .collection-add { margin-top: 12px; }
+.phone .web-collections .collection-add > .btn { width: 100%; }
+.phone .web-collections .collection-list { gap: 12px; margin-top: 20px; }
+.phone .web-collections .collection-card {
+  display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 12px;
+  align-items: center; width: 100%; min-height: 90px; padding: 14px;
+  background: #fffef9; border: 1px solid #e5e6dc; border-radius: 18px; text-align: left;
+}
+.phone .collection-card .icon { width: 46px; height: 46px; margin: 0; border-radius: 14px; font-size: 27px; }
+.phone .collection-copy { display: block; min-width: 0; }
+.phone .collection-heading { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
+.phone .collection-heading .name { flex: 1; min-width: 0; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.phone .collection-heading .badge { flex: 0 0 auto; max-width: 100px; padding: 3px 7px; font-size: 11px; font-weight: 400; line-height: 1.6; }
+.phone .collection-meta { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; line-height: 1.6; }
+.phone .web-collections #collection-form > .btn { width: 100%; }
+
+/* Keep common settings actions together and long explanations optional. */
+.phone .web-settings .section { margin-top: 18px; }
+.phone .web-settings .card { padding: 16px; }
+.phone .web-settings .section-title { margin-bottom: 10px; }
+.phone .web-settings .card > p:last-child { margin-bottom: 0; }
+.phone .backup-actions,
+.phone .settings-account-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.phone .backup-actions > .btn,
+.phone .settings-account-actions > .btn { width: 100%; min-width: 0; min-height: 48px; padding: 10px 7px; font-size: 13px; }
+.phone .backup-warning { font-size: 12px; line-height: 1.7; color: #8a7355; margin: 12px 0 0; }
+.phone .backup-details { border-top: 1px solid #e9ebdf; margin-top: 14px; padding-top: 6px; }
+.phone .web-settings summary { font-size: 13px; line-height: 1.6; min-height: 44px; padding: 10px 0; }
+.phone .web-settings .settings-details { padding: 8px 16px; }
+.phone .web-settings #cloud-code { display: block; width: 100%; min-height: 48px; }
+.phone .web-settings #cloud-login > .btn { width: 100%; margin-top: 12px; }
+.phone .web-settings #cloud-panel .row:not(.between) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.phone .web-settings #cloud-panel .row:not(.between) > .btn { width: 100%; min-width: 0; padding: 10px 6px; font-size: 13px; }
+.phone .web-settings #cloud-panel .between { flex-wrap: wrap; }
+.phone .web-settings #cloud-panel .between > b { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.phone .web-settings #cloud-panel .between > .btn { flex: 0 0 auto; }
+.phone .web-settings p { overflow-wrap: anywhere; }
+.phone .web-settings .web-version { text-align: center; font-size: 11px; }
+
+/* The content scrolls above the navigation; the home-indicator inset belongs to the nav. */
+body.web-trial .phone #nav {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  height: calc(64px + env(safe-area-inset-bottom, 0px));
+  flex: 0 0 calc(64px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+body.web-trial .phone #nav button {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; min-width: 0; min-height: 60px; padding: 8px 2px;
+  border-radius: 0; font-size: 12px; line-height: 1.35;
+}
+body.web-trial .phone #nav button span { margin: 0; font-size: 20px; line-height: 1; }
+body.web-trial .phone #app { scroll-padding-bottom: 24px; }
+@media (max-width: 850px) {
+  body.web-trial .phone #app { padding: 20px 16px 24px; }
+}
+@media (max-width: 360px) {
+  .phone .web-home .home-title { font-size: 25px; }
+  .phone .web-home .remember-box { padding: 14px; }
+  .phone .home-shortcuts { gap: 8px; }
+  .phone .home-shortcuts > .btn { font-size: 12px; }
+  .phone .web-collections .collection-card { grid-template-columns: 40px minmax(0, 1fr); padding: 12px; gap: 10px; }
+  .phone .collection-card .icon { width: 40px; height: 44px; font-size: 25px; }
+  .phone .collection-heading .name { font-size: 14px; }
+  .phone .collection-heading .badge { max-width: 88px; font-size: 10px; padding: 3px 5px; }
+}
