@@ -1,4 +1,4 @@
-const CACHE='xundong-shell-v40';
+const CACHE='xundong-shell-v41';
 const ASSETS=['/','/styles.css','/app.js','/views.js','/ui.js','/domain.js','/catalog.js','/ai.js','/ai-direct.js','/skill-prompts.js','/training.js','/timing.js','/abilities.js','/knowledge.js','/creators.js','/saved-plans.js','/corpus.js','/activity-uses.js','/digest.js','/sources.js','/personal-activities.js','/media-store.js','/method-plan.js','/self-check.js','/ingest.js','/safety.js','/storage.js','/experience.js','/icon.svg','/manifest.webmanifest','/apple-touch-icon.png','/icon-192.png','/icon-512.png',...['entry','core','gym','bodyweight','convict','isometric','boxing','mobility','functional','foot-hand-rope'].map(x=>`/library/${x}.js`)];
 ASSETS.push('/account.html','/account.css','/account-config.js','/account-scope.js','/account-client.js','/account-view.js','/account-portal.js','/cloud-backup.js');
 ASSETS.push('/cloud-media.js','/source-media-cache.js');
@@ -11,6 +11,7 @@ ASSETS.push('/knowledge-notebook.js');
 ASSETS.push('/follow-along.js');
 ASSETS.push('/training-duration.js');
 ASSETS.push('/library-browse.js');
+ASSETS.push('/library-browser-view.js','/library-browser.css');
 ASSETS.push('/daily-practice.js');
 ASSETS.push('/source-quality.js');
 ASSETS.push('/source-feedback.js');
