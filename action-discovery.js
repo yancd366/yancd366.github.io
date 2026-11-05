@@ -16,12 +16,12 @@ export function webActionSource(point,index,{text,mode='source_quote',question='
 }
 export function webActionIntakeInput(state,web){
  if(!safeURL(web?.url)||!web?.userText)throw Error('缺少来源链接和你提供的教学文字。');
- const input=buildActivityIntakeInput(state,{text:web.userText});input.source={platform:'网页搜索',url:web.url,title:web.title,creator:null};input.evidence[0].sourceLabel=web.mode==='source_quote'?'用户粘贴的来源段落（网页未自动核验）':'用户自己的动作描述';return input;
+ const input=buildActivityIntakeInput(state,{text:web.userText});input.source={platform:'网页搜索',url:web.url,title:web.title,creator:null};input.evidence[0].sourceLabel=web.retrievedByServer?'服务器读取的来源段落（待核对）':web.mode==='source_quote'?'用户粘贴的来源段落（网页未自动核验）':'用户自己的动作描述';return input;
 }
 export function saveWebActionSource(state,web,candidates,now=new Date()){
  if(!web?.userText||!safeURL(web.url))throw Error('网页来源材料已失效，请重新核对。');
  for(const c of candidates)if(!c.manual&&(!c.evidenceQuote||!web.userText.includes(c.evidenceQuote)))throw Error('动作引证不在你提供的原文中。');
  const k={id:uid(),status:'saved',sourceKind:'web_search',title:clip(candidates.map(c=>c.draft?.name||c.name).filter(Boolean).join('、'),120)||web.title,text:web.userText.slice(0,700),url:web.url,sourceTitle:web.title,topics:[],
-  claims:candidates.map(c=>({text:c.draft?.description||c.name,evidenceQuote:c.evidenceQuote||web.userText.slice(0,300),evidenceKind:'user_text',evidenceSource:'user',sources:[{title:web.title,url:web.url,site:web.site}]})),
+  claims:candidates.map(c=>({text:c.draft?.description||c.name,evidenceQuote:c.evidenceQuote||web.userText.slice(0,300),evidenceKind:web.retrievedByServer?'web_text':'user_text',evidenceSource:web.retrievedByServer?'parser':'user',sources:[{title:web.title,url:web.url,site:web.site}]})),
   activityIds:[],activityLinks:[],useInPlanning:false,webActionSource:{...web},createdAt:now.toISOString(),updatedAt:now.toISOString()};state.knowledge.push(k);return k;
 }

@@ -70,7 +70,7 @@ export function createPersonalActivity(state, input, { source = null, parentActi
   const p = { id: `my-${uid()}`, status: 'confirmed', planningUse: PLANNING_USES[planningUse] ? planningUse : 'manual_only', ...draft,
     parentActivityId, source: source ? { knowledgeId: source.knowledgeId || null, quote: clip(source.quote, 300), lowTrust: Boolean(source.lowTrust), thumbnailId: clip(source.thumbnailId, 180)||null, userCorrection: clip(source.userCorrection,300)||null, suggestedActivityId: clip(source.suggestedActivityId,100)||null, sourceUrl: clip(source.sourceUrl, 1000)||null, kind:source.kind==='image_post'?'image_post':'video_frame', startMs:source.startMs!=null&&Number.isFinite(Number(source.startMs))?Number(source.startMs):null, endMs:source.endMs!=null&&Number.isFinite(Number(source.endMs))?Number(source.endMs):null } : null,
     personalNote: clip(personalNote, 1000), createdAt: date(now), updatedAt: date(now), archivedAt: null };
-  if(source?.webSearch&&p.source){const w=source.webSearch;p.source.webSearch={url:clip(w.url,1000),title:clip(w.title,120),site:clip(w.site,80),question:clip(w.question,300),userText:clip(w.userText,4000),mode:w.mode==='my_description'?'my_description':'source_quote',verified:false};delete p.source.kind;}
+  if(source?.webSearch&&p.source){const w=source.webSearch;p.source.webSearch={url:clip(w.url,1000),title:clip(w.title,120),site:clip(w.site,80),question:clip(w.question,300),userText:clip(w.userText,4000),mode:w.mode==='my_description'?'my_description':'source_quote',verified:false,...(w.retrievedByServer?{retrievedByServer:true,readAt:clip(w.readAt,40),evidenceId:clip(w.evidenceId,80)}:{})};delete p.source.kind;}
   state.personalActivities ||= []; state.personalActivities.push(p);
   return p;
 }

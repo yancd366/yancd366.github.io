@@ -1,6 +1,7 @@
 import {accountOrigin,validateAccountScope} from './account-scope.js';
 import {validateMediaDescriptor,describeImage,imageSignatureOK} from './cloud-media.js';
 import {validateSyncDocuments} from './sync-data.js';
+import {validateTeachingSource} from './assistant-source.js';
 export class AccountAPIError extends Error{constructor(message,code='network'){super(message);this.code=code;}}
 const ERRORS={login_required:'登录已到期，请重新输入邀请登录码。',invalid_credentials:'登录码无效或已停用。',login_rate_limited:'登录尝试过多，请稍后再试。',backup_limit:'云备份已满，请先删除不需要的旧备份。',not_found:'这份云备份已不存在，请刷新列表。',invalid_backup:'备份未通过校验，请先导出本机备份检查内容。',invalid_image:'配图校验未通过，请换图或只备份文字。',media_missing:'仍有配图未上传，请重新核对。',storage_unavailable:'云备份服务暂不可用，本机记录仍保留。'};
 Object.assign(ERRORS,{sync_unavailable:'同步数据库尚未启用，本机资料继续保留。',sync_busy:'其他设备正在提交，稍后自动重试。',sync_conflict_changed:'云端或本机版本又有修改，请重新核对。',sync_dependencies:'修改涉及关联条目或配图限额，请保留备份并核对相关内容。',sync_conflict_large:'这条冲突较大，请先导出双方版本后处理。',sync_conflict_limit:'待核对冲突过多，请先处理已有冲突。',sync_size:'同步资料达到容量限制，请先导出备份并整理范围。',invalid_sync:'同步条目未通过校验，本机与云端原资料都保留。'});
@@ -31,6 +32,7 @@ export function createAccountClient(base,{fetchImpl=(...args)=>fetch(...args)}={
   }
   const id=key=>{if(typeof key!=='string'||!/^\d{13}-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key))throw Error('云备份编号无效。');return encodeURIComponent(key);};
   return {
+    async readTeaching(session,url,signal){return validateTeachingSource(await call('/source/read',{method:'POST',session,body:{url},signal,maxReplyBytes:100000}));},
     async login(loginCode,signal){const r=await call('/login',{method:'POST',body:{loginCode},signal});return validateAccountSession({...r.user,serviceOrigin:origin,token:r.token,expiresAt:r.expiresAt});},
     me:(session,signal)=>call('/me',{session,signal}),
     async syncRead(session,cursor,signal){const r=await call(`/sync${cursor===undefined?'':`?cursor=${encodeURIComponent(cursor)}`}`,{session,signal,maxReplyBytes:12_100_000});if(!Number.isSafeInteger(r?.cursor)||r.cursor<0)throw Error('同步游标无效。');if(!r.unchanged){if(r.protocol!==1||!r.documents||Object.keys(r.documents).length>10000||!Array.isArray(r.conflicts)||r.conflicts.length>120)throw Error('云端同步格式无效。');validateSyncDocuments(r.documents);for(const d of Object.values(r.documents))if(!Number.isSafeInteger(d.revision)||d.revision<1||d.revision>r.cursor||typeof d.deleted!=='boolean')throw Error('同步记录版本无效。');}return r;},
