@@ -57,7 +57,9 @@ import {syncStatusText} from './sync-view.js';
 import {LIBRARY_GROUPS,LIBRARY_PAGE_SIZE} from './library-browse.js';
 import {createAssistantController} from './assistant-controller.js';
 import {assistantStore} from './assistant-store.js';
-import {assistantHTML} from './assistant-view.js';
+import {assistantSceneTargetHTML} from './assistant-scene-view.js';
+import {sceneDraftFromTask,sceneTarget,actionSelectionSignature,prepareAssistantScene,confirmAssistantScene} from './assistant-tasks.js';
+import {assistantHTML,assistantHistoryHTML} from './assistant-view.js';
 import {readAssistantTeaching} from './assistant-io.js';
 import {canonicalCaptureURL} from './knowledge.js';
 const $=s=>document.querySelector(s);
@@ -65,6 +67,7 @@ const activityById=id=>activities.find(a=>a.id===id);
 let storageError=false,state,lastStored=null;let importDraft=null;
 let accountScope=null,accountLocked=false,activeStoreKey=STORE_KEY;
 let cloudSync=null,cloudSyncStatus=null,cloudSyncTimer=null,cloudSyncDebounce=null;
+let pendingAssistantScene=null;
 let assistant=null,assistantState={thread:null,busy:false},assistantReturn='library';
 let aiProbePromise=Promise.resolve();
 let offlineStatus=window.isSecureContext?'正在准备离线文件…':'当前 HTTP 地址不支持离线启动。';
@@ -108,11 +111,13 @@ function commit(change){
 }
 function render(){
   if(accountLocked)return;
+  const oldChat=$('.assistant-messages'),chatScroll=oldChat?{id:oldChat.dataset.thread,top:oldChat.scrollTop,bottom:oldChat.scrollHeight-oldChat.scrollTop-oldChat.clientHeight<80}:null;
   if(!storageError&&!currentAccountMatches()){lockAccountPage();return;}
   if(!state.draft)request={...request,timeMode:'training',minutes:Math.max(10,Math.min(120,Number(request.minutes)||20))};
   const content={assistant:()=>'',today:()=>todayHTML(state,request,aiState),records:()=>recordsHTML(state,aiState),library:()=>libraryHTML(state,filters),knowledge:()=>knowledgeDetailId?knowledgeDetailHTML(state,knowledgeDetailId):knowledgeHTML(state,knowledgeFilter,knowledgeTopic,knowledgeKind,knowledgeContentType),body:()=>accountEntryHTML(accountScope)+bodyHTML(state)}[page]();
-  $('#app').innerHTML=shell(page,state,page==='assistant'?assistantHTML(assistantState.thread,{...assistantState,captures:state.captures,busy:assistantState.busy||aiState.busy||!assistantState.thread}):content,storageError);
+  $('#app').innerHTML=shell(page,state,page==='assistant'?assistantHTML(assistantState.thread,{...assistantState,captures:state.captures,canCancel:assistantState.busy,busy:assistantState.busy||aiState.busy||!assistantState.thread}):content,storageError);
   $('#app').classList.toggle('assistant-mode',page==='assistant');
+  if(page==='assistant'){fitAssistantComposer();const chat=$('.assistant-messages');if(chat)chat.scrollTop=!chatScroll||chatScroll.id!==chat.dataset.thread||chatScroll.bottom?chat.scrollHeight:chatScroll.top;}
   if(accountScope&&$('.account-entry>div'))$('.account-entry>div').insertAdjacentHTML('beforeend',`<small class="account-sync-note" data-app-sync-status>${esc(syncStatusText(cloudSyncStatus))}</small>`);
   if(page==='knowledge'&&!knowledgeDetailId)enhanceKnowledgeFilters();
   showOfflineStatus(offlineStatus);
@@ -160,6 +165,23 @@ async function openAssistant(context={}){
 async function assistantCapture(messageId,url){
  try{if(!url)throw Error('找不到分享链接。');let capture=state.captures.find(c=>(c.canonicalUrl||canonicalCaptureURL(c.rawUrl))===canonicalCaptureURL(url));if(!capture){const r=captureEntry({shareText:url,userNote:'来自助手的动作研究。'},state);if(!commit(s=>{s.captures.push(r.capture);s.knowledge.push(r.knowledge);}))return;capture=r.capture;}await assistant?.bindCapture(messageId,capture.id);if(capture.ingestStatus!=='complete'&&capture.ingestStatus!=='queued')await startIngest(capture.id,capture.ingestStatus==='failed');}catch(e){toast(e.message);}
 }
+function assistantSceneBundle(message){
+ if(message.sceneDraft){const source=assistantState.thread.messages.find(m=>m.id===message.sceneDraft.sourceMessageId);if(!source||source.supersededBy||message.sceneDraft.sourceSignature!==actionSelectionSignature(source))throw Error('候选或选择已变化，请从当前候选重新核对场景。');return message.sceneDraft;}
+ const ids=message.selectedActivityIds||[];if(!ids.length)throw Error('先勾选愿意加入场景的动作。');return {sourceMessageId:message.id,sourceSignature:actionSelectionSignature(message),activityIds:ids,fixedIds:[],minutes:null,target:message.sceneHint||sceneTarget(state,'',assistantState.thread.context),evidence:message.actions?.map(a=>({activityId:a.activityId,quote:a.evidenceQuote}))||[],purpose:message.purposeText||message.query||'核对动作加入场景'};
+}
+function openAssistantScene(messageId,target=null){
+ try{if(assistantState.busy||aiState.busy)throw Error('请等当前处理完成后再核对。');const m=assistantState.thread?.messages.find(m=>m.id===messageId);if(!m||m.supersededBy)throw Error('这组结果已变化，请使用当前候选。');const bundle=assistantSceneBundle(m),destination=target||bundle.target;
+ if(!destination||destination.sceneId&&!sceneById(state,destination.sceneId)){showModal('选择目标场景',assistantSceneTargetHTML(state,messageId,bundle));return;}
+ const key=JSON.stringify([bundle.sourceSignature,bundle.activityIds,bundle.fixedIds,bundle.minutes,destination]),cached=m.sceneReview?.key===key?m.sceneReview:null,review=cached?.review||prepareAssistantScene(state,bundle,destination),virtual={...review.input,id:review.targetId||'scene-assistant-preview',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},preview={...state,movementScenes:[...(state.movementScenes||[]).filter(s=>s.id!==virtual.id),virtual]};
+ pendingAssistantScene={messageId,key,bundle,review,target:destination};showModal(review.targetId?'核对并更新场景':'核对并创建场景',sceneEditorHTML(preview,virtual.id));const form=$('#scene-form');form.dataset.id=review.targetId||'';form.dataset.assistantMessage=messageId;form.dataset.template=review.input.templateKey||'';
+ for(const b of form.querySelectorAll('[data-after],[data-scene-delete]'))b.remove();form.querySelector('.scene-picker').open=false;form.querySelector('button[type=submit]').innerHTML=`${review.targetId?'确认更新场景':'确认创建场景'} ${icon('check')}`;form.insertAdjacentHTML('afterbegin',`<p class="notice">准备新增 ${review.added.length} 个动作，另有 ${review.existing.length} 个已在池中。保存后，已有今日清单保持不变。</p>`);
+ assistantSceneRefreshButton(form,review,messageId);
+ if(cached?.values){for(const field of form.elements){if(!field.name)continue;const values=cached.values[field.name]||[];if(field.type==='checkbox')field.checked=values.includes(field.value);else field.value=values[0]??field.value;}refreshSceneSelected(form);}
+ }catch(e){toast(e.message);}
+}
+function assistantSceneRefreshButton(form,review,messageId){if(review.targetId&&JSON.stringify(sceneById(state,review.targetId))!==review.expected&&!form.querySelector('[data-assistant-scene-refresh]'))form.insertAdjacentHTML('beforeend',`<button type="button" class="secondary full" data-assistant-scene-refresh="${esc(messageId)}">重新载入当前场景（替换本次未保存修改）</button>`);}
+function refreshSceneSelected(form){const input=readSceneForm(new FormData(form));$('#scene-selected').innerHTML=sceneSelectedHTML(input);$('#scene-selected-count').textContent=input.activityIds.length+' 项';}
+function rememberAssistantScene(form){if(!pendingAssistantScene||!form.dataset.assistantMessage)return;const values={};for(const [k,v]of new FormData(form)){values[k]||=[];values[k].push(v);}assistant?.saveSceneReview(pendingAssistantScene.messageId,{key:pendingAssistantScene.key,review:pendingAssistantScene.review,target:pendingAssistantScene.target,values}).catch(e=>toast(e.message));}
 function startAccountSync(){
   if(!accountScope||storageError)return;
   try{cloudSync=createBrowserSync({canApply:canApplyCloud,onApplied:receiveCloudState,onStatus:s=>{cloudSyncStatus=s;for(const node of document.querySelectorAll('[data-app-sync-status]'))node.textContent=syncStatusText(s);}});
@@ -232,7 +254,12 @@ function activityReviewFeedback(form,message,field=''){
   form.querySelectorAll('[aria-invalid="true"]').forEach(x=>x.removeAttribute('aria-invalid'));
   if(field)form.querySelector(`[name="${field}"]`)?.setAttribute('aria-invalid','true');
 }
-document.addEventListener('input',event=>{const form=event.target.closest('#assistant-form');if(form)assistant?.draft(form.elements.text.value,form.elements.web.checked).catch(e=>toast(e.message));});
+document.addEventListener('change',e=>{if(e.target.dataset.assistantSelect){const id=e.target.dataset.assistantSelect,activityId=e.target.dataset.activity;assistant?.selectAction(id,activityId,e.target.checked).then(()=>{render();document.querySelector(`[data-assistant-select="${id}"][data-activity="${activityId}"]`)?.focus({preventScroll:true});}).catch(error=>toast(error.message));}const form=e.target.closest('#scene-form');if(form)rememberAssistantScene(form);});
+document.addEventListener('input',e=>{const form=e.target.closest('#scene-form');if(form)rememberAssistantScene(form);});
+function fitAssistantComposer(){if(page!=='assistant')return;$('#app').style.setProperty('--assistant-height',`${window.visualViewport?.height||innerHeight}px`);const input=$('#assistant-input');if(input){input.style.height='26px';input.style.height=Math.min(130,input.scrollHeight)+'px';}}
+window.visualViewport?.addEventListener('resize',fitAssistantComposer);
+window.addEventListener('resize',fitAssistantComposer);
+document.addEventListener('input',event=>{const form=event.target.closest('#assistant-form');if(form){fitAssistantComposer();assistant?.draft(form.elements.text.value,form.elements.web.checked).catch(e=>toast(e.message));}});
 document.addEventListener('change',event=>{const form=event.target.closest('#assistant-form');if(form)assistant?.draft(form.elements.text.value,form.elements.web.checked).catch(e=>toast(e.message));});
 async function extractActivities({capture=null,text='',knowledgeId=null,actionSegment=null,captureId=null,assistantMessageId=null}={}){
   await aiProbePromise;
@@ -776,16 +803,19 @@ document.addEventListener('click',e=>{
   if(el.dataset.autoIngest){startIngest(el.dataset.autoIngest,el.dataset.forceIngest==='true');return;}
   if(el.dataset.libraryGroup){selectLibraryGroup(el.dataset.libraryGroup);return;}
   if(el.dataset.action==='assistant-open'){openAssistant();return;}
+  if(el.dataset.assistantSceneRefresh){const id=el.dataset.assistantSceneRefresh,target=pendingAssistantScene?.target;assistant?.saveSceneReview(id,null).then(()=>openAssistantScene(id,target)).catch(e=>toast(e.message));return;}
+  if(el.dataset.assistantScene){openAssistantScene(el.dataset.assistantScene);return;}
+  if(el.dataset.assistantAdjust){assistant?.focusActions(el.dataset.assistantAdjust).then(()=>{const input=$('#assistant-input');input.placeholder='例如：第二个换成站着做的，其余保留';input.focus();}).catch(e=>toast(e.message));return;}
   if(el.hasAttribute('data-assistant-back')){navigate(assistantReturn);return;}
   if(el.hasAttribute('data-assistant-new')){assistant?.start().catch(e=>toast(e.message));return;}
-  if(el.hasAttribute('data-assistant-context-clear')){assistant?.clearContext().catch(e=>toast(e.message));return;}
-  if(el.hasAttribute('data-assistant-history')){assistant?.history().then(rows=>showModal('最近对话',rows.map(t=>`<button class="secondary full" data-assistant-thread="${esc(t.id)}">${esc(t.messages.find(m=>m.role==='user')?.text.slice(0,40)||'新对话')}</button>`).join(''))).catch(e=>toast(e.message));return;}
+  if(el.hasAttribute('data-assistant-context-clear')){assistant?.clearContext().then(()=>$('#sheet').close()).catch(e=>toast(e.message));return;}
+  if(el.hasAttribute('data-assistant-history')){assistant?.history().then(rows=>showModal('历史对话',assistantHistoryHTML(rows,assistantState.thread))).catch(e=>toast(e.message));return;}
   if(el.dataset.assistantThread){assistant?.select(el.dataset.assistantThread).then(()=>$('#sheet').close()).catch(e=>toast(e.message));return;}
   if(el.hasAttribute('data-assistant-cancel')){assistant?.cancel();return;}
   if(el.dataset.assistantExample){assistant?.draft(el.dataset.assistantExample,Boolean(assistantState.thread?.allowWeb)).then(()=>render());return;}
   if(el.hasAttribute('data-assistant-research')){const message=assistantState.thread?.messages[Number(el.dataset.assistantResearch)];assistant?.research(message?.query||'').catch(e=>toast(e.message));return;}
   if(el.dataset.assistantRead){assistant?.read(el.dataset.assistantRead,Number(el.dataset.point),Number(el.dataset.source)).catch(e=>toast(e.message));return;}
-  if(el.dataset.assistantReview){const m=assistantState.thread?.messages.find(m=>m.id===el.dataset.assistantReview);if(!m?.intake)return;openActivityReview(m.intake,{webSource:m.webSource,assistantMessageId:m.id,captureId:m.captureId,knowledgeId:m.knowledgeId,actionSegment:m.actionSegment,...(m.sourceSnapshot?{sourceSnapshot:m.sourceSnapshot}:{}),sceneId:assistantState.thread.context?.sceneId||null});restoreAssistantReview(m);return;}
+  if(el.dataset.assistantReview){const m=assistantState.thread?.messages.find(m=>m.id===el.dataset.assistantReview);if(!m?.intake)return;openActivityReview(m.intake,{webSource:m.webSource,assistantMessageId:m.id,captureId:m.captureId,knowledgeId:m.knowledgeId,actionSegment:m.actionSegment,...(m.sourceSnapshot?{sourceSnapshot:m.sourceSnapshot}:{}),sceneId:null});restoreAssistantReview(m);return;}
   if(el.dataset.assistantCapture||el.dataset.assistantCaptureSource){const id=el.dataset.assistantCapture||el.dataset.assistantCaptureSource,m=assistantState.thread?.messages.find(m=>m.id===id),url=el.dataset.assistantCaptureSource?m?.searchPoints?.[Number(el.dataset.point)]?.sources?.[Number(el.dataset.source)]?.url:m?.sourceUrl;assistantCapture(id,url||state.captures.find(c=>c.id===m?.captureId)?.rawUrl);return;}
   if(el.dataset.assistantExtract){const m=assistantState.thread?.messages.find(m=>m.id===el.dataset.assistantExtract),capture=state.captures.find(c=>c.id===m?.captureId);if(!capture)return toast('来源已移除，请重新收藏。');const segment=capture.actionSegments?.length===1?capture.actionSegments[0]:null;extractActivities({capture,captureId:capture.id,knowledgeId:capture.knowledgeId,actionSegment:segment,assistantMessageId:m.id});return;}
   if(el.dataset.assistantSourceManual){const m=assistantState.thread?.messages.find(m=>m.id===el.dataset.assistantSourceManual);if(!m?.searchPoints)return;pendingActionDiscovery={question:m.query,points:m.searchPoints,sceneId:assistantState.thread.context?.sceneId||'',assistantMessageId:m.id};showModal('提供教学原文',actionSourceForm(pendingActionDiscovery,Number(el.dataset.point)));return;}
@@ -924,6 +954,7 @@ document.addEventListener('input',e=>{
 });
 document.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.target,f=new FormData(form);
+  if(form.id==='assistant-scene-target-form'){const value=String(f.get('target')||''),target=value.startsWith('scene:')?{sceneId:value.slice(6)}:value.startsWith('template:')?{templateKey:value.slice(9)}:value==='custom'?{name:String(f.get('newName')||'').trim(),place:String(f.get('newPlace')||'home')}:null;if(!target||target.name===''){toast('请选择场景或填写自定义名称。');return;}openAssistantScene(form.dataset.message,target);return;}
   if(form.id==='assistant-form'){try{await assistant?.draft(String(f.get('text')||''),Boolean(f.get('web')));await assistant?.send(String(f.get('text')||''));}catch(error){toast(error.message);}return;}
   try{
     let ok=false;
@@ -980,6 +1011,7 @@ document.addEventListener('submit',async e=>{
       if(ok){const captureId=oldId||form.dataset.createdCapture;$('#sheet').close();render();const capture=state.captures.find(c=>c.id===captureId);if(!oldId&&preferVideoIngest(capture)){startIngest(captureId);}else if(captureHasEvidence(capture)&&aiState.ready&&state.settings?.aiConsent)analyzeCapture(captureId);else toast(captureHasEvidence(capture)?'已保存到收件箱。启用 AI 后可整理成知识卡。':'已保存链接。配置自动视频整理后可一键转写。');}return;
     }
     if(form.id==='scene-form'){
+      if(form.dataset.assistantMessage){try{const pending=pendingAssistantScene,m=assistantState.thread?.messages.find(m=>m.id===form.dataset.assistantMessage);if(!pending||pending.messageId!==m?.id)throw Error('对话已变化，请重新核对。');assistantSceneBundle(m);let saved;ok=commit(s=>{saved=confirmAssistantScene(s,pending.review,readSceneForm(f));});if(ok){pendingAssistantScene=null;$('#sheet').close();assistant?.markSceneSaved(m.id,saved).catch(e=>toast('场景已保存；对话标记未能保存：'+e.message));render();}}catch(error){const notice=form.querySelector('.scene-form-error');notice.hidden=false;notice.textContent=error.message;if(pendingAssistantScene)assistantSceneRefreshButton(form,pendingAssistantScene.review,pendingAssistantScene.messageId);}return;}
       try{const input={...readSceneForm(f),templateKey:form.dataset.template||null};let savedId;ok=commit(s=>{savedId=saveScene(s,input,form.dataset.id||null).id;});if(ok){$('#sheet').close();render();toast('场景已保存；已有今日清单不重排。');if(e.submitter?.dataset.after==='search')actionSearchDialog(savedId);if(e.submitter?.dataset.after==='pool')scenePoolDialog(savedId);}}catch(error){const notice=form.querySelector('.scene-form-error');notice.hidden=false;notice.textContent=error.message;}return;
     }
     if(form.id==='scene-pool-input'){requestScenePool(form.dataset.scene,String(f.get('question')||'').trim());return;}

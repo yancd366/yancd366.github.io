@@ -1,5 +1,6 @@
 export const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const paths = {
+  globe:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0M2 12h20M12 2c5 5 5 15 0 20-5-5-5-15 0-20', send:'M12 19V5m-6 6 6-6 6 6', stop:'M6 6h12v12H6z',
   today:'M3 12h4l3-8 4 16 3-8h4', records:'M8 3H5v18h14V3h-3M9 3h6v4H9zM8 12h8M8 16h5',
   library:'M4 5h6v6H4zM14 5h6v6h-6zM4 15h6v6H4zM14 15h6v6h-6z', knowledge:'M12 5C8 2 4 3 2 4v15c4-2 7-1 10 1 3-2 6-3 10-1V4c-2-1-6-2-10 1v15',
   body:'M12 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6M5 21v-3a7 7 0 0 1 14 0v3', arrow:'M5 12h14m-5-5 5 5-5 5',
