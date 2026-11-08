@@ -12,11 +12,22 @@
   function normalizeClothingType(value) {value=String(value||'').trim();return /^(t\s*恤|t[ -]?shirt|tee)$/i.test(value)?'T恤':value;}
   function normalizeColor(value) {value=String(value||'').trim();const aliases={白:'白色',黑:'黑色',蓝:'蓝色',红:'红色',灰:'灰色',绿:'绿色',黄:'黄色',粉:'粉色',棕:'棕色'};return aliases[value]||value;}
   function searchTerm(value) {
-    let text=String(value||'').trim().split(/[，,。；;！!]/)[0].replace(/[？?]+$/,'').trim();
-    const prefix=/^(?:你好|请问|请|帮我|我想|我要|我之前买的|我之前的|我之前|我刚才的|我的|我那个|我|找一下|找一找|找找|找不到|没找到|找不着|寻找|查一下|查查|找|之前那个|之前的|之前|那个|那件|那条|那根|这件|这个|一下|的|一下子)\s*/;
-    let last;do{last=text;text=text.replace(prefix,'').trim();}while(text!==last);
-    const suffix=/(?:我)?(?:放在哪里了|放在哪里|放在哪儿了|放在哪儿|放在哪了|放在哪|放哪了|在哪里了|在哪里|在哪儿了|在哪儿|在哪了|在哪|找不到了|找不到|找不着了|找不着|没找到了|没找到|不见了|丢了|去哪了)[呢啊呀吗么嘛]?$/;
-    do{last=text;text=text.replace(suffix,'').trim();}while(text!==last);
+    // Strip conversational wrappers, not item attributes. This runs locally for text and ASR.
+    let text=String(value||'').trim().replace(/^[\s，,。；;！!？?：:]+|[\s，,。；;！!？?：:]+$/g,'');
+    const recordsRequested=/有没有|有无|查找|查一下|查一查|查查|查询/.test(text);
+    const prefix=/^(?:你好|您好|请问(?:一下)?|请|麻烦(?:你|您)?|劳驾|能不能|可不可以|能否|可以|能|你(?:还)?(?:知道|记得)|我(?:不记得|忘记|忘了|想不起)(?:了)?|告诉我|提醒我|有没有|有无|查找|帮我|帮忙|替我|给我|我(?:想要|想|要)|我(?:之前|刚才|刚刚|上次)?把|我之前买的|我之前的|我之前|我刚才的|我的|我那个|我|找一下|找一找|找找|找不到(?:了)?|没找到|找不着|寻找|查一下|查一查|查查|查询|看看|看一下|找(?!茬)|之前那个|之前的|之前|刚才|刚刚|上次|那个|那件|那条|那根|那把|那双|那张|这件|这个|一下子|一下)\s*[，,。；;！!？?：:]*\s*/;
+    let last;
+    do{last=text;text=text.replace(prefix,'').trim();}while(text!==last);
+    // Greetings can contain commas; discard later commentary only after removing them.
+    text=text.split(/[，,。；;！!？?]/)[0].trim();
+    const location=/(?:(?:被|让)(?:我|你)|我(?:给)?|给)?(?:现在|到底|究竟|一般|平时|通常|之前|刚才|上次)?(?:放(?:置|回|进|入|到|在|起来)?|摆(?:放)?|搁(?:在)?|收(?:纳|好|起来|进|到|在)?(?:放)?|存(?:放|在|到)?|藏(?:在)?|塞(?:到|在|进)?|装(?:进|在|到)?|落(?:在)?|丢(?:在)?|拿(?:到|去)?|挪(?:到)?|移(?:到)?)?(?:在|到|进|去)?(?:了)?(?:哪(?:里|儿|边|个(?:地方|位置|房间|箱子|盒子|柜子)|一(?:层|格))?|什么(?:地方|位置|地儿)|啥(?:地方|位置|地儿)|何处)(?:里|内)?(?:(?:去|来)?(?:了|啦)|来着)?(?:的)?(?:呢|啊|呀|吗|么|嘛|吧|哦|啦|来着)*$/;
+    const missing=/(?:我)?(?:怎么(?:也|都)?|为什么|咋|突然|好像|又|一直)?(?:找不到|找不着|没找到|不见|丢|没了)(?:了|啦)?(?:呢|啊|呀|吗|么|嘛|吧|哦)*$/;
+    do{
+      last=text;text=text.replace(location,'').replace(missing,'');
+      if(recordsRequested)text=text.replace(/的记录(?:吗|么|呢)?$/,'');
+      if(!/(?:毛呢|粗呢|花呢)$/.test(text))text=text.replace(/呢(?:啊|呀|嘛|吧)?$/,'');
+      text=text.trim();
+    }while(text!==last);
     return text.toLowerCase();
   }
   function seed() {
