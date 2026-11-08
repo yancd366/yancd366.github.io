@@ -17,6 +17,46 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 .phone .web-home .find-box > .row.section { margin-top: 12px; }
 .phone .web-home .find-box .find-voice { flex: 0 0 72px; padding: 10px 4px; }
 .phone .web-home .find-box .search input { width: 100%; min-width: 0; }
+.phone .find-entry { display: grid; gap: 10px; }
+.phone .find-entry-actions { display: grid; grid-template-columns: minmax(0, 1fr) 88px; gap: 10px; }
+.phone .find-entry-actions > .btn { width: 100%; min-width: 0; margin: 0; }
+.phone .web-home .find-box .find-voice { padding: 10px 6px; }
+
+/* Keep memory actions out of the photograph/name row, including on the home feed. */
+.phone .memory-card { padding: 16px; }
+.phone .memory-card-head { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; align-items: start; }
+.phone .memory-open { display: flex; width: 100%; min-width: 0; padding: 0; gap: 12px; background: transparent; text-align: left; justify-content: flex-start; }
+.phone .memory-thumb { width: 54px; height: 60px; flex: 0 0 54px; object-fit: cover; border-radius: 12px; background: #eeefe6; }
+.phone .memory-symbol { display: flex; align-items: center; justify-content: center; color: #52694f; font-size: 26px; }
+.phone .memory-copy { display: block; min-width: 0; }
+.phone .memory-copy b { display: block; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
+.phone .memory-status { display: block; margin-top: 5px; }
+.phone .memory-more { width: 44px; min-width: 44px; min-height: 44px; padding: 0; background: transparent; font-size: 24px; }
+.phone .memory-position { margin-top: 14px; }
+.phone .memory-position-label { color: #7c8478; font-size: 11px; }
+.phone .memory-position .location { margin-top: 4px; color: #315c47; font-size: 16px; font-weight: 500; line-height: 1.65; }
+.phone .memory-position p { margin: 6px 0 0; font-size: 11px; }
+.phone .memory-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+.phone .memory-actions > .btn { width: 100%; min-width: 0; min-height: 46px; padding: 11px 6px; }
+.phone .memory-menu-panel { display: grid; gap: 6px; padding: 8px; margin-top: 12px; border-radius: 12px; background: #f4f1e9; }
+.phone .memory-menu-panel .btn { width: 100%; justify-content: flex-start; background: transparent; color: #926b56; }
+.phone .web-find .find-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.phone .web-find .eyebrow { letter-spacing: 1px; }
+.phone .find-heading .find-edit { background: transparent; padding: 10px 2px; color: #5f755e; }
+.phone .find-question { margin: 8px 0 20px; font-size: 24px; line-height: 1.5; overflow-wrap: anywhere; }
+.phone .find-results-count { margin: 0 0 12px; font-size: 12px; color: #7c8478; }
+.phone .find-question-form { margin-bottom: 20px; padding: 14px; border-radius: 16px; background: #e7eddf; }
+.phone .find-question-form .memory-actions { margin-top: 10px; }
+.phone .find-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 16px; padding: 12px; border-radius: 12px; background: #e7eddf; font-size: 12px; line-height: 1.7; }
+.phone .find-clue { display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 8px; width: 100%; }
+.phone .find-clue b { font-size: 16px; }
+.phone .find-clue .location { margin-top: 0; }
+.phone .find-empty { text-align: center; padding: 36px 8px; }
+.phone .find-empty > span { display: block; color: #84907e; font-size: 40px; }
+.phone .find-empty p { line-height: 1.7; }
+.phone .find-location-form { border-top: 1px solid #e5e6dc; padding-top: 14px; margin-top: 14px; }
+.phone .find-location-form > b { display: block; margin-bottom: 14px; font-size: 14px; }
+.phone .find-location-form .label { margin-top: 12px; }
 
 /* Collection cards must not inherit the zero-padding .item button reset. */
 .phone .web-collections .collection-shortcuts > .btn { width: 100%; min-width: 0; padding: 11px 8px; }

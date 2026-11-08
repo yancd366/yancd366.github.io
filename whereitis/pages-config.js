@@ -1,1 +1,1 @@
-window.WhereitisPages={"apiBase":"https://whereitis-web-lunalzfmdi.cn-hangzhou.fcapp.run","basePath":"/whereitis/","release":"b4b548d910d5","loginUrl":"https://yancd366.github.io/whereitis/?v=b4b548d910d5","appUrl":"https://yancd366.github.io/whereitis/app.html?v=b4b548d910d5"};
+window.WhereitisPages={"apiBase":"https://whereitis-web-lunalzfmdi.cn-hangzhou.fcapp.run","basePath":"/whereitis/","release":"ddd9891555ea","loginUrl":"https://yancd366.github.io/whereitis/?v=ddd9891555ea","appUrl":"https://yancd366.github.io/whereitis/app.html?v=ddd9891555ea"};
